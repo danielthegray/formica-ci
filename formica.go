@@ -7,18 +7,9 @@ import (
 	"syscall"
 
 	"danielgray.xyz/formica/runner"
-
-	"danielgray.xyz/formica/conf"
 )
 
-// ShutdownNotifiers is a collection of channels used to notify of different shutdown events
-type ShutdownNotifiers struct {
-	slow             <-chan struct{}
-	immediate        <-chan struct{}
-	forceTermination <-chan struct{}
-}
-
-func handlersCtrlC() *ShutdownNotifiers {
+func handlersCtrlC() *runner.ShutdownNotifiers {
 	slowShutdown := make(chan struct{}, 1)
 	immediateShutdown := make(chan struct{}, 1)
 	forceTerm := make(chan struct{}, 1)
@@ -46,10 +37,10 @@ func handlersCtrlC() *ShutdownNotifiers {
 			}
 		}
 	}()
-	return &ShutdownNotifiers{
-		slow:             slowShutdown,
-		immediate:        immediateShutdown,
-		forceTermination: forceTerm,
+	return &runner.ShutdownNotifiers{
+		Slow:             slowShutdown,
+		Immediate:        immediateShutdown,
+		ForceTermination: forceTerm,
 	}
 }
 
@@ -63,15 +54,13 @@ func explainExitLogic() {
 
 func main() {
 	shutdownNotifiers := handlersCtrlC()
-	conf.Initialize()
 	//stdin := strings.NewReader("ls\n")
 	//stdout := strings.Builder{}
 	//stderr := strings.Builder{}
 	//runner.PrepareCommand(".", "test", stdin, stdout, stderr)
-	runner.Init()
-	log.Println("Formica CI is now running")
 	explainExitLogic()
-	<-shutdownNotifiers.forceTermination
+	go runner.Start(shutdownNotifiers)
+	<-shutdownNotifiers.ForceTermination
 	/*
 		fmt.Println("Listing the remote server")
 		cmd := exec.Command("ssh", "tor-bridge", "ls", "/")

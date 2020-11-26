@@ -1,0 +1,5 @@
+# Executable
+formica
+# "client" files/folders
+formica_conf
+config_init*
