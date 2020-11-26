@@ -6,6 +6,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"danielgray.xyz/formica/runner"
+
 	"danielgray.xyz/formica/conf"
 )
 
@@ -66,6 +68,7 @@ func main() {
 	//stdout := strings.Builder{}
 	//stderr := strings.Builder{}
 	//runner.PrepareCommand(".", "test", stdin, stdout, stderr)
+	runner.Init()
 	log.Println("Formica CI is now running")
 	explainExitLogic()
 	<-shutdownNotifiers.forceTermination
