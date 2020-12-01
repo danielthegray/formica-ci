@@ -2,6 +2,7 @@ package runner
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"time"
@@ -10,6 +11,7 @@ import (
 const configFolder = "formica_conf"
 const configInitPrefix = "config_init"
 const updatePrefix = "update"
+const jobQueue = "job_queue"
 
 // ShutdownNotifiers is a collection of channels used to notify of different shutdown events
 type ShutdownNotifiers struct {
@@ -77,7 +79,7 @@ func updateConfig() error {
 func launchBackgroundUpdater() chan<- struct{} {
 	updaterStopEvent := make(chan struct{}, 1)
 	// TODO: parse from config
-	jobUpdateDelay := 1 * time.Minute
+	jobUpdateDelay := 5 * time.Minute
 	go func() {
 		for {
 			select {
@@ -92,6 +94,30 @@ func launchBackgroundUpdater() chan<- struct{} {
 		}
 	}()
 	return updaterStopEvent
+}
+
+func launchJobQueue() chan<- struct{} {
+	jobQueueStopEvent := make(chan struct{}, 1)
+	_ = os.Mkdir(jobQueue, 0777)
+	queuePollDelay := 1 * time.Second
+	go func() {
+		for {
+			select {
+			case <-jobQueueStopEvent:
+				return
+			case <-time.After(queuePollDelay):
+				filesInQueue, err := ioutil.ReadDir(jobQueue)
+				if err != nil {
+					log.Printf("error when listing jobs in queue: %s", err.Error())
+				}
+				for _, enqueuedJob := range filesInQueue {
+					fmt.Printf("Found job in %s", enqueuedJob)
+				}
+			}
+
+		}
+	}()
+	return jobQueueStopEvent
 }
 
 // Start initializes the job runner
