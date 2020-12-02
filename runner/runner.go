@@ -6,12 +6,15 @@ import (
 	"log"
 	"os"
 	"path"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
 const configFolder = "formica_conf"
 const configInitPrefix = "config_init"
 const updatePrefix = "update"
+const agentInitPrefix = "agent_init"
 const jobQueue = "job_queue"
 
 // ShutdownNotifiers is a collection of channels used to notify of different shutdown events
@@ -20,6 +23,8 @@ type ShutdownNotifiers struct {
 	Immediate        <-chan struct{}
 	ForceTermination <-chan struct{}
 }
+
+var validJobs []string
 
 func fetchConfigFolder() error {
 	currentDir, err := os.Getwd()
@@ -78,10 +83,22 @@ func updateConfig() error {
 }
 
 func reloadJobs() error {
+	validJobs = nil
 	// TODO: deal with jobs that have disappeared but are still running
 	// TODO: deal with new jobs
 	// TODO: deal with existing jobs
-	return nil
+	return filepath.Walk(configFolder, func(file string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasPrefix(info.Name(), agentInitPrefix) {
+			jobPathSegments := strings.SplitN(path.Dir(file), string(os.PathSeparator), 2)
+			jobPath := jobPathSegments[1]
+			log.Printf("Found job %s", jobPath)
+			validJobs = append(validJobs, jobPath)
+		}
+		return nil
+	})
 }
 
 func launchBackgroundUpdater() chan<- struct{} {
@@ -112,7 +129,10 @@ func launchJobQueueListener() chan<- struct{} {
 		for {
 			select {
 			case <-jobQueueStopEvent:
-				// todo remove job queue folder? or nah
+				err := os.RemoveAll(jobQueue)
+				if err != nil {
+					log.Printf("error when cleaning up job queue folder: %s", err.Error())
+				}
 				return
 			case <-time.After(queuePollDelay):
 				filesInQueue, err := ioutil.ReadDir(jobQueue)
