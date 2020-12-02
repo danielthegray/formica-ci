@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"path"
 	"time"
 )
 
@@ -59,7 +60,6 @@ func ensureConfigFolderPresent() error {
 }
 
 func updateConfig() error {
-	log.Println("UPDATING CONFIG")
 	currentDir, err := os.Getwd()
 	if err != nil {
 		log.Println("Error when getting the current dir")
@@ -69,10 +69,18 @@ func updateConfig() error {
 	if err != nil {
 		return fmt.Errorf("error while finding update script in configuration: %s", err.Error())
 	}
-	_, err = ExecuteScript(currentDir+"/"+configFolder, updateScriptFile)
+	_, err = ExecuteScript(path.Join(currentDir, configFolder), updateScriptFile)
 	if err != nil {
 		return fmt.Errorf("error while updating configuration: %s", err.Error())
 	}
+	// after updating the configuration, we reload the jobs that exist
+	return reloadJobs()
+}
+
+func reloadJobs() error {
+	// TODO: deal with jobs that have disappeared but are still running
+	// TODO: deal with new jobs
+	// TODO: deal with existing jobs
 	return nil
 }
 
@@ -96,7 +104,7 @@ func launchBackgroundUpdater() chan<- struct{} {
 	return updaterStopEvent
 }
 
-func launchJobQueue() chan<- struct{} {
+func launchJobQueueListener() chan<- struct{} {
 	jobQueueStopEvent := make(chan struct{}, 1)
 	_ = os.Mkdir(jobQueue, 0777)
 	queuePollDelay := 1 * time.Second
@@ -104,14 +112,26 @@ func launchJobQueue() chan<- struct{} {
 		for {
 			select {
 			case <-jobQueueStopEvent:
+				// todo remove job queue folder? or nah
 				return
 			case <-time.After(queuePollDelay):
 				filesInQueue, err := ioutil.ReadDir(jobQueue)
 				if err != nil {
 					log.Printf("error when listing jobs in queue: %s", err.Error())
+					continue
 				}
 				for _, enqueuedJob := range filesInQueue {
-					fmt.Printf("Found job in %s", enqueuedJob)
+					fullJobFilename := path.Join(jobQueue, enqueuedJob.Name())
+					jobName, err := ioutil.ReadFile(fullJobFilename)
+					if err != nil {
+						log.Printf("error while opening job file %s: %s", fullJobFilename, err.Error())
+					} else {
+						log.Printf("Found job %s in %s", jobName, fullJobFilename)
+					}
+					err = os.Remove(fullJobFilename)
+					if err != nil {
+						log.Printf("failed to cleanup job file %s: %s", fullJobFilename, err.Error())
+					}
 				}
 			}
 
@@ -131,12 +151,16 @@ func Start(shutdownNotifiers *ShutdownNotifiers) {
 		log.Fatalf("configuration is not updateable: %s", err)
 	}
 	updaterStop := launchBackgroundUpdater()
+	jobQueueListenerStop := launchJobQueueListener()
+
+	log.Println("Formica CI is now running")
 
 	for {
 		select {
 		case <-shutdownNotifiers.Slow:
 			// notify updater to stop
 			updaterStop <- struct{}{}
+			jobQueueListenerStop <- struct{}{}
 			break
 		case <-shutdownNotifiers.Immediate:
 			break
