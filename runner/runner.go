@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -65,16 +66,11 @@ func ensureConfigFolderPresent() error {
 }
 
 func updateConfig() error {
-	currentDir, err := os.Getwd()
-	if err != nil {
-		log.Println("Error when getting the current dir")
-		return err
-	}
 	updateScriptFile, err := FindScript(configFolder, updatePrefix)
 	if err != nil {
 		return fmt.Errorf("error while finding update script in configuration: %s", err.Error())
 	}
-	_, err = ExecuteScript(path.Join(currentDir, configFolder), updateScriptFile)
+	_, err = ExecuteScript(configFolder, updateScriptFile)
 	if err != nil {
 		return fmt.Errorf("error while updating configuration: %s", err.Error())
 	}
@@ -121,7 +117,45 @@ func launchBackgroundUpdater() chan<- struct{} {
 	return updaterStopEvent
 }
 
-func launchJobQueueListener() chan<- struct{} {
+func launchJobRunner() (receiver chan<- string, stopNotifier chan<- struct{}) {
+	runnerStopEvent := make(chan struct{}, 1)
+	jobReceiver := make(chan string)
+	var runningJobs []exec.Cmd
+	go func() {
+		for {
+			select {
+			case <-runnerStopEvent:
+				for _, job := range runningJobs {
+					job.Wait()
+				}
+				return
+			case jobToRun := <-jobReceiver:
+				jobFolder := path.Join(configFolder, jobToRun)
+				log.Printf("Launching job from %s", jobFolder)
+				agentInitScript, err := FindScript(jobFolder, agentInitPrefix)
+				if err != nil {
+					log.Printf("error while finding script: %s", err.Error())
+					continue
+				}
+				stdin := strings.NewReader("ls\n")
+				stdout := strings.Builder{}
+				stderr := strings.Builder{}
+				newJob := PrepareCommand(jobFolder, agentInitScript, stdin, &stdout, &stderr)
+				log.Printf("Running agent init script %s", newJob)
+				err = newJob.Run()
+				if err != nil {
+					log.Printf("error when running job on agent: %s", err.Error())
+				}
+				log.Printf("the output is: %s", stdout.String())
+				runningJobs = append(runningJobs, *newJob)
+			}
+		}
+
+	}()
+	return jobReceiver, runnerStopEvent
+}
+
+func launchJobQueueListener(jobReceiver chan<- string) chan<- struct{} {
 	jobQueueStopEvent := make(chan struct{}, 1)
 	_ = os.Mkdir(jobQueue, 0777)
 	queuePollDelay := 1 * time.Second
@@ -142,10 +176,12 @@ func launchJobQueueListener() chan<- struct{} {
 				}
 				for _, enqueuedJob := range filesInQueue {
 					fullJobFilename := path.Join(jobQueue, enqueuedJob.Name())
-					jobName, err := ioutil.ReadFile(fullJobFilename)
+					specifiedJob, err := ioutil.ReadFile(fullJobFilename)
 					if err != nil {
 						log.Printf("error while opening job file %s: %s", fullJobFilename, err.Error())
 					} else {
+						jobName := strings.TrimSpace(string(specifiedJob))
+						jobReceiver <- jobName
 						log.Printf("Found job %s in %s", jobName, fullJobFilename)
 					}
 					err = os.Remove(fullJobFilename)
@@ -154,7 +190,6 @@ func launchJobQueueListener() chan<- struct{} {
 					}
 				}
 			}
-
 		}
 	}()
 	return jobQueueStopEvent
@@ -171,7 +206,8 @@ func Start(shutdownNotifiers *ShutdownNotifiers) {
 		log.Fatalf("configuration is not updateable: %s", err)
 	}
 	updaterStop := launchBackgroundUpdater()
-	jobQueueListenerStop := launchJobQueueListener()
+	jobReceiver, jobRunnerStop := launchJobRunner()
+	jobQueueListenerStop := launchJobQueueListener(jobReceiver)
 
 	log.Println("Formica CI is now running")
 
@@ -180,6 +216,7 @@ func Start(shutdownNotifiers *ShutdownNotifiers) {
 		case <-shutdownNotifiers.Slow:
 			// notify updater to stop
 			updaterStop <- struct{}{}
+			jobRunnerStop <- struct{}{}
 			jobQueueListenerStop <- struct{}{}
 			break
 		case <-shutdownNotifiers.Immediate:

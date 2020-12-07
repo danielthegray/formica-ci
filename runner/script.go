@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -74,6 +75,14 @@ func FindScript(scriptFolder string, scriptPrefix string) (string, error) {
 
 // PrepareCommand sets up a command ready to be executed and wires in stdin/stdout/stderr readers/writers
 func PrepareCommand(parentFolder, scriptFile string, stdin io.Reader, stdout io.Writer, stderr io.Writer) *exec.Cmd {
+	log.Printf("Running script %s in folder %s", scriptFile, parentFolder)
+	if !strings.HasPrefix(parentFolder, "/") {
+		currentDir, err := os.Getwd()
+		if err != nil {
+			log.Fatal("Error when getting the current dir")
+		}
+		parentFolder = filepath.Join(currentDir, parentFolder)
+	}
 	scriptAbsolutePath := filepath.Join(parentFolder, scriptFile)
 	var shellPath string
 	var err error
