@@ -25,7 +25,7 @@ type ShutdownNotifiers struct {
 	ForceTermination <-chan struct{}
 }
 
-var validJobs []string
+var existingJobs []string
 
 func fetchConfigFolder() error {
 	currentDir, err := os.Getwd()
@@ -79,7 +79,7 @@ func updateConfig() error {
 }
 
 func reloadJobs() error {
-	validJobs = nil
+	existingJobs = nil
 	// TODO: deal with jobs that have disappeared but are still running
 	// TODO: deal with new jobs
 	// TODO: deal with existing jobs
@@ -91,7 +91,7 @@ func reloadJobs() error {
 			jobPathSegments := strings.SplitN(path.Dir(file), string(os.PathSeparator), 2)
 			jobPath := jobPathSegments[1]
 			log.Printf("Found job %s", jobPath)
-			validJobs = append(validJobs, jobPath)
+			existingJobs = append(existingJobs, jobPath)
 		}
 		return nil
 	})
@@ -117,6 +117,15 @@ func launchBackgroundUpdater() chan<- struct{} {
 	return updaterStopEvent
 }
 
+func isJobNotFound(jobName string) bool {
+	for _, validJobName := range existingJobs {
+		if validJobName == jobName {
+			return false
+		}
+	}
+	return true
+}
+
 func launchJobRunner() (receiver chan<- string, stopNotifier chan<- struct{}) {
 	runnerStopEvent := make(chan struct{}, 1)
 	jobReceiver := make(chan string)
@@ -130,6 +139,10 @@ func launchJobRunner() (receiver chan<- string, stopNotifier chan<- struct{}) {
 				}
 				return
 			case jobToRun := <-jobReceiver:
+				if isJobNotFound(jobToRun) {
+					log.Printf("job %s is not found in the configuration folder!", jobToRun)
+					continue
+				}
 				jobFolder := path.Join(configFolder, jobToRun)
 				log.Printf("Launching job from %s", jobFolder)
 				agentInitScript, err := FindScript(jobFolder, agentInitPrefix)
