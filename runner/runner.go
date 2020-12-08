@@ -126,6 +126,30 @@ func isJobNotFound(jobName string) bool {
 	return true
 }
 
+func runJob(jobName string) (*exec.Cmd, error) {
+	jobFolder := filepath.Join(configFolder, jobName)
+	log.Printf("Launching job from %s", jobFolder)
+	agentInitScript, err := FindScript(jobFolder, agentInitPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("error while searching for agent_init script: %s", err.Error())
+	}
+	jobScript, err := TransferAndRunScriptCommand(filepath.Join(jobFolder, "01-run.sh"), "/tmp/formica_agent")
+	if err != nil {
+		return nil, fmt.Errorf("error while preparing job run script: %s", err.Error())
+	}
+	log.Printf("The job scripts is %s", jobScript)
+	stdin := strings.NewReader(jobScript)
+	stdout := strings.Builder{}
+	stderr := strings.Builder{}
+	newJob := PrepareCommand(jobFolder, agentInitScript, stdin, &stdout, &stderr)
+	newJob.Start()
+	go func() {
+		newJob.Wait()
+		log.Printf("the output is: %s", stdout.String())
+	}()
+	return newJob, nil
+}
+
 func launchJobRunner() (receiver chan<- string, stopNotifier chan<- struct{}) {
 	runnerStopEvent := make(chan struct{}, 1)
 	jobReceiver := make(chan string)
@@ -143,23 +167,11 @@ func launchJobRunner() (receiver chan<- string, stopNotifier chan<- struct{}) {
 					log.Printf("job %s is not found in the configuration folder!", jobToRun)
 					continue
 				}
-				jobFolder := path.Join(configFolder, jobToRun)
-				log.Printf("Launching job from %s", jobFolder)
-				agentInitScript, err := FindScript(jobFolder, agentInitPrefix)
+				newJob, err := runJob(jobToRun)
 				if err != nil {
-					log.Printf("error while finding script: %s", err.Error())
+					log.Printf("error while running job '%s': %s", jobToRun, err.Error())
 					continue
 				}
-				stdin := strings.NewReader("ls\n")
-				stdout := strings.Builder{}
-				stderr := strings.Builder{}
-				newJob := PrepareCommand(jobFolder, agentInitScript, stdin, &stdout, &stderr)
-				log.Printf("Running agent init script %s", newJob)
-				err = newJob.Run()
-				if err != nil {
-					log.Printf("error when running job on agent: %s", err.Error())
-				}
-				log.Printf("the output is: %s", stdout.String())
 				runningJobs = append(runningJobs, *newJob)
 			}
 		}

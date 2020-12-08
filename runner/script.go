@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -71,6 +72,67 @@ func FindScript(scriptFolder string, scriptPrefix string) (string, error) {
 		return "", fmt.Errorf("too many %s scripts found in %s", scriptPrefix, scriptFolder)
 	}
 	return matchingScripts[0], nil
+}
+
+// FileTransferCommand builds a series of shell commands to place a local file on the server, at a specific destination path
+// using only a direct terminal connection (it assumes that the client has the "base64" utility installed)
+func FileTransferCommand(localFileToTransfer, pathOnDestination string) (string, error) {
+	filename := filepath.Base(localFileToTransfer)
+	var destinationFolder string
+	if strings.HasSuffix(pathOnDestination, string(filepath.Separator)+filename) {
+		destinationFolder = filepath.Dir(pathOnDestination)
+	} else {
+		destinationFolder = pathOnDestination
+	}
+	remoteFilePath := filepath.Join(destinationFolder, filename)
+	// we will try to be conservative with the command line limit
+	const CommandLengthLimit = 32000
+	transferContents, err := ioutil.ReadFile(localFileToTransfer)
+	if err != nil {
+		return "", err
+	}
+	localFileInBase64 := base64.StdEncoding.EncodeToString(transferContents)
+
+	commandStart := "echo '%s' | base64 -d > " + remoteFilePath
+	commandAppend := "echo '%s' | base64 -d >> " + remoteFilePath
+	useCommandRest := false
+	result := strings.Builder{}
+	// we ensure that the path exists on the destination side
+	result.WriteString("mkdir -p " + destinationFolder + "\n")
+	blockSizeLimit := CommandLengthLimit - len(commandAppend)
+	for len(localFileInBase64) > blockSizeLimit {
+		command := commandAppend
+		if !useCommandRest {
+			command = commandStart
+			useCommandRest = true
+		}
+		blockToSend := localFileInBase64[0:blockSizeLimit]
+		localFileInBase64 = localFileInBase64[blockSizeLimit:]
+		result.WriteString(fmt.Sprintf(command+"\n", blockToSend))
+	}
+	command := commandAppend
+	if !useCommandRest {
+		command = commandStart
+		// not-needed
+		// useCommandRest = true
+	}
+	result.WriteString(fmt.Sprintf(command+"\n", localFileInBase64))
+
+	return result.String(), nil
+}
+
+func TransferAndRunScriptCommand(localFile, remoteExecDir string) (string, error) {
+	localFileName := filepath.Base(localFile)
+	fileTransferCommands, err := FileTransferCommand(localFile, remoteExecDir)
+	if err != nil {
+		return "", fmt.Errorf("error while building file transfer command: %s", err.Error())
+	}
+	fileTransferCommands = "set -e\n" + fileTransferCommands +
+		"cd " + remoteExecDir + "\n" +
+		"chmod +x " + localFileName + "\n" +
+		"sh ./" + localFileName + "\n" +
+		"echo STEP_RET_CODE=$?\n"
+	return fileTransferCommands, nil
 }
 
 // PrepareCommand sets up a command ready to be executed and wires in stdin/stdout/stderr readers/writers
