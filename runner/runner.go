@@ -16,6 +16,7 @@ const configFolder = "formica_conf"
 const configInitPrefix = "config_init"
 const updatePrefix = "update"
 const agentInitPrefix = "agent_init"
+const runPrefix = "run"
 const jobQueue = "job_queue"
 
 // ShutdownNotifiers is a collection of channels used to notify of different shutdown events
@@ -133,7 +134,12 @@ func runJob(jobName string) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error while searching for agent_init script: %s", err.Error())
 	}
-	jobScript, err := TransferAndRunScriptCommand(filepath.Join(jobFolder, "01-run.sh"), "/tmp/formica_agent")
+
+	runScript, err := FindScript(jobFolder, runPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't find %s script for job %s", runPrefix, jobName)
+	}
+	jobScript, err := TransferAndRunScriptCommand(filepath.Join(jobFolder, runScript), "/tmp/formica_agent")
 	if err != nil {
 		return nil, fmt.Errorf("error while preparing job run script: %s", err.Error())
 	}
