@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,8 +18,9 @@ const configInitPrefix = "config_init"
 const updatePrefix = "update"
 const agentInitPrefix = "agent_init"
 const runPrefix = "run"
-const runLocalPrefix = "run_local"
+const generatePrefix = "gen"
 const jobQueue = "job_queue"
+const formicaRuns = "formica_runs"
 
 // UpdateEnabled set to true at launch will enable live updating of the configuration
 const UpdateEnabled = false
@@ -133,6 +135,69 @@ func isJobNotFound(jobName string) bool {
 	return true
 }
 
+func generateJobRunCode(jobName string) (string, error) {
+	jobFolder := filepath.Join(configFolder, jobName)
+	// we only run this script if it is found, if not, then no problem
+	localScriptOutput := ""
+	runLocalScript, err := FindScript(jobFolder, generatePrefix)
+	if err == nil {
+		localScriptOutput, err = ExecuteScript(jobFolder, runLocalScript)
+		if err != nil {
+			return "", fmt.Errorf("error while running %s script: %s", generatePrefix, err.Error())
+		}
+	}
+	// the run script is transferred and run on the remote machine
+	runScript, err := FindScript(jobFolder, runPrefix)
+	if err != nil {
+		return "", fmt.Errorf("couldn't find %s script for job %s: %s", runPrefix, jobName, err.Error())
+	}
+	jobScript, err := TransferAndRunScriptCommand(filepath.Join(jobFolder, runScript), "/tmp/formica_agent")
+	if err != nil {
+		return "", fmt.Errorf("error while preparing job run script: %s", err.Error())
+	}
+	// we combine the locally generated shell code + the job transfer/run commands
+	jobScript = localScriptOutput + jobScript
+
+	log.Printf("The job scripts is %s", jobScript)
+
+	return jobScript, nil
+}
+
+func prepareRunFolder(jobName string) (string, error) {
+	runFolder := filepath.Join(formicaRuns, jobName)
+	_ = os.MkdirAll(runFolder, 0750)
+
+	files, err := ioutil.ReadDir(runFolder)
+	if err != nil {
+		return "", fmt.Errorf("error while checking inside run folder %s: %s", runFolder, err.Error())
+	}
+	attempts := 0
+	// we just have an error so that we keep trying to get a "free" sequence number
+	// for the job runs
+	err = fmt.Errorf("dummy error")
+	for attempts < 10 && err != nil {
+		maxIndex := 1
+		for _, file := range files {
+			if !file.IsDir() {
+				continue
+			}
+			if runIndex, err := strconv.Atoi(file.Name()); err == nil {
+				if runIndex >= maxIndex {
+					maxIndex++
+				}
+			}
+		}
+		runFolder = filepath.Join(runFolder, fmt.Sprintf("%d", maxIndex))
+
+		err = os.Mkdir(runFolder, 0750)
+		if err != nil {
+			log.Printf("Error while preparing run folder %s: %s", runFolder, err.Error())
+		}
+		attempts++
+	}
+	return runFolder, nil
+}
+
 func runJob(jobName string) (*exec.Cmd, error) {
 	jobFolder := filepath.Join(configFolder, jobName)
 	log.Printf("Launching job from %s", jobFolder)
@@ -141,38 +206,30 @@ func runJob(jobName string) (*exec.Cmd, error) {
 		return nil, fmt.Errorf("error while searching for %s script: %s", agentInitPrefix, err.Error())
 	}
 
-	// we only run this script if it is found, if not, then no problem
-	localScriptOutput := ""
-	runLocalScript, err := FindScript(jobFolder, runLocalPrefix)
-	if err == nil {
-		localScriptOutput, err = ExecuteScript(jobFolder, runLocalScript)
-		if err != nil {
-			return nil, fmt.Errorf("error while running %s script: %s", runLocalPrefix, err.Error())
-		}
-	}
-
-	// the run script is transferred and run on the remote machine
-	runScript, err := FindScript(jobFolder, runPrefix)
+	jobScript, err := generateJobRunCode(jobName)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't find %s script for job %s", runPrefix, jobName)
+		return nil, fmt.Errorf("error while preparing job run code: %s", err.Error())
 	}
-	jobScript, err := TransferAndRunScriptCommand(filepath.Join(jobFolder, runScript), "/tmp/formica_agent")
+
+	jobRunFolder, err := prepareRunFolder(jobName)
 	if err != nil {
-		return nil, fmt.Errorf("error while preparing job run script: %s", err.Error())
+		return nil, fmt.Errorf("error while setting up job run folder: %s", err.Error())
 	}
 
-	// we combine the locally generated shell code + the job transfer/run commands
-	jobScript = localScriptOutput + jobScript
+	stdoutWriter, err := os.Create(filepath.Join(jobRunFolder, "stdout.log"))
+	if err != nil {
+		return nil, fmt.Errorf("error when opening up stdout.log file: %s", err.Error())
+	}
+	stderrWriter, err := os.Create(filepath.Join(jobRunFolder, "stderr.log"))
+	if err != nil {
+		return nil, fmt.Errorf("error when opening up stderr.log file: %s", err.Error())
+	}
 
-	//log.Printf("The job scripts is %s", jobScript)
 	stdin := strings.NewReader(jobScript)
-	stdout := strings.Builder{}
-	stderr := strings.Builder{}
-	newJob := PrepareCommand(jobFolder, agentInitScript, stdin, &stdout, &stderr)
+	newJob := PrepareCommand(jobFolder, agentInitScript, stdin, stdoutWriter, stderrWriter)
 	newJob.Start()
 	go func() {
 		newJob.Wait()
-		log.Printf("the output is: %s", stdout.String())
 	}()
 	return newJob, nil
 }

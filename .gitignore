@@ -2,4 +2,5 @@
 formica
 # "client" files/folders
 formica_conf
+formica_runs
 config_init*
