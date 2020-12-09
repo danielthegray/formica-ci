@@ -4,3 +4,7 @@ formica
 formica_conf
 formica_runs
 config_init*
+
+# IDE/editor files
+.vscode
+tags
