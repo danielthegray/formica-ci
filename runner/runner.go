@@ -17,7 +17,11 @@ const configInitPrefix = "config_init"
 const updatePrefix = "update"
 const agentInitPrefix = "agent_init"
 const runPrefix = "run"
+const runLocalPrefix = "run_local"
 const jobQueue = "job_queue"
+
+// UpdateEnabled set to true at launch will enable live updating of the configuration
+const UpdateEnabled = false
 
 // ShutdownNotifiers is a collection of channels used to notify of different shutdown events
 type ShutdownNotifiers struct {
@@ -71,9 +75,11 @@ func updateConfig() error {
 	if err != nil {
 		return fmt.Errorf("error while finding update script in configuration: %s", err.Error())
 	}
-	_, err = ExecuteScript(configFolder, updateScriptFile)
-	if err != nil {
-		return fmt.Errorf("error while updating configuration: %s", err.Error())
+	if UpdateEnabled {
+		_, err = ExecuteScript(configFolder, updateScriptFile)
+		if err != nil {
+			return fmt.Errorf("error while updating configuration: %s", err.Error())
+		}
 	}
 	// after updating the configuration, we reload the jobs that exist
 	return reloadJobs()
@@ -132,9 +138,20 @@ func runJob(jobName string) (*exec.Cmd, error) {
 	log.Printf("Launching job from %s", jobFolder)
 	agentInitScript, err := FindScript(jobFolder, agentInitPrefix)
 	if err != nil {
-		return nil, fmt.Errorf("error while searching for agent_init script: %s", err.Error())
+		return nil, fmt.Errorf("error while searching for %s script: %s", agentInitPrefix, err.Error())
 	}
 
+	// we only run this script if it is found, if not, then no problem
+	localScriptOutput := ""
+	runLocalScript, err := FindScript(jobFolder, runLocalPrefix)
+	if err == nil {
+		localScriptOutput, err = ExecuteScript(jobFolder, runLocalScript)
+		if err != nil {
+			return nil, fmt.Errorf("error while running %s script: %s", runLocalPrefix, err.Error())
+		}
+	}
+
+	// the run script is transferred and run on the remote machine
 	runScript, err := FindScript(jobFolder, runPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't find %s script for job %s", runPrefix, jobName)
@@ -143,7 +160,11 @@ func runJob(jobName string) (*exec.Cmd, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error while preparing job run script: %s", err.Error())
 	}
-	log.Printf("The job scripts is %s", jobScript)
+
+	// we combine the locally generated shell code + the job transfer/run commands
+	jobScript = localScriptOutput + jobScript
+
+	//log.Printf("The job scripts is %s", jobScript)
 	stdin := strings.NewReader(jobScript)
 	stdout := strings.Builder{}
 	stderr := strings.Builder{}
