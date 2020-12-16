@@ -12,7 +12,68 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
+
+// TimestampedLogger is a WriteCloser implementation that outputs to a normal log file, as well as
+// to another file with one UNIX epoch timestamp per line written (to match up later)
+type TimestampedLogger struct {
+	logFile       io.WriteCloser
+	timestampFile io.WriteCloser
+}
+
+func (tl *TimestampedLogger) Write(p []byte) (n int, err error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	toWrite := string(p)
+	numberOfContainedLines := strings.Count(toWrite, "\n")
+	for i := 0; i < numberOfContainedLines; i++ {
+		currentUnixTime := fmt.Sprintf("%d\n", time.Now().UnixNano())
+		_, err := tl.timestampFile.Write([]byte(currentUnixTime))
+		if err != nil {
+			return 0, err
+		}
+	}
+	return tl.logFile.Write(p)
+}
+
+// Close closes both of the underlying files (log + timestamp)
+func (tl *TimestampedLogger) Close() error {
+	errL := tl.logFile.Close()
+	errT := tl.timestampFile.Close()
+	if errL != nil || errT != nil {
+		errorMessage := ""
+		if errL != nil {
+			errorMessage = errorMessage + errL.Error()
+		}
+		if errT != nil {
+			errorMessage = errorMessage + errT.Error()
+		}
+		return fmt.Errorf("Error(s) when closing timestamped log: %s", errorMessage)
+	}
+	return nil
+}
+
+// BuildTimestampedLogger returns a writer that writes a ".log" file with the normal output
+// as well as a ".timestamp" file with the timestamps for each line
+func BuildTimestampedLogger(logFolder, baseName string) (*TimestampedLogger, error) {
+	log.Printf("Building timestamped logger at folder '%s' with base name '%s'", logFolder, baseName)
+	logFilePath := filepath.Join(logFolder, baseName+".log")
+	timestampFilePath := filepath.Join(logFolder, baseName+".timestamp")
+	logFile, err := os.Create(logFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("error when creating log file: %s", err.Error())
+	}
+	timestampFile, err := os.Create(timestampFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("error when creating timestamp file: %s", err.Error())
+	}
+	return &TimestampedLogger{
+		logFile,
+		timestampFile,
+	}, nil
+}
 
 // FindScriptError is an error type for the result of finding a script to run
 type FindScriptError struct {
@@ -121,6 +182,7 @@ func FileTransferCommand(localFileToTransfer, pathOnDestination string) (string,
 	return result.String(), nil
 }
 
+// TransferAndRunScriptCommand generates shell commands that create the specified localFile on the agent's side and then executes it
 func TransferAndRunScriptCommand(localFile, remoteExecDir string) (string, error) {
 	localFileName := filepath.Base(localFile)
 	fileTransferCommands, err := FileTransferCommand(localFile, remoteExecDir)

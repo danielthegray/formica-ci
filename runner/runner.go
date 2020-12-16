@@ -22,6 +22,9 @@ const generatePrefix = "gen"
 const jobQueue = "job_queue"
 const formicaRuns = "formica_runs"
 
+const stdoutPrefix = "stdout"
+const stderrPrefix = "stderr"
+
 // UpdateEnabled set to true at launch will enable live updating of the configuration
 const UpdateEnabled = false
 
@@ -216,19 +219,21 @@ func runJob(jobName string) (*exec.Cmd, error) {
 		return nil, fmt.Errorf("error while setting up job run folder: %s", err.Error())
 	}
 
-	stdoutWriter, err := os.Create(filepath.Join(jobRunFolder, "stdout.log"))
+	stdoutWriter, err := BuildTimestampedLogger(jobRunFolder, stdoutPrefix)
 	if err != nil {
-		return nil, fmt.Errorf("error when opening up stdout.log file: %s", err.Error())
+		return nil, err
 	}
-	stderrWriter, err := os.Create(filepath.Join(jobRunFolder, "stderr.log"))
+	stderrWriter, err := BuildTimestampedLogger(jobRunFolder, stderrPrefix)
 	if err != nil {
-		return nil, fmt.Errorf("error when opening up stderr.log file: %s", err.Error())
+		return nil, err
 	}
 
 	stdin := strings.NewReader(jobScript)
 	newJob := PrepareCommand(jobFolder, agentInitScript, stdin, stdoutWriter, stderrWriter)
 	newJob.Start()
 	go func() {
+		defer stdoutWriter.Close()
+		defer stderrWriter.Close()
 		newJob.Wait()
 	}()
 	return newJob, nil
