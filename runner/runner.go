@@ -129,13 +129,15 @@ func launchBackgroundUpdater() chan<- struct{} {
 	return updaterStopEvent
 }
 
-func isJobNotFound(jobName string) bool {
+func jobsToTrigger(jobName string) []string {
+	var jobs []string
+	jobPrefix := jobName + "/"
 	for _, validJobName := range existingJobs {
-		if validJobName == jobName {
-			return false
+		if validJobName == jobName || strings.HasPrefix(validJobName, jobPrefix) {
+			jobs = append(jobs, validJobName)
 		}
 	}
-	return true
+	return jobs
 }
 
 func generateJobRunCode(jobName string) (string, error) {
@@ -252,16 +254,19 @@ func launchJobRunner() (receiver chan<- string, stopNotifier chan<- struct{}) {
 				}
 				return
 			case jobToRun := <-jobReceiver:
-				if isJobNotFound(jobToRun) {
-					log.Printf("job %s is not found in the configuration folder!", jobToRun)
+				jobsToTrigger := jobsToTrigger(jobToRun)
+				if len(jobsToTrigger) == 0 {
+					log.Printf("no job matching '%s' was found in the configuration folder!", jobToRun)
 					continue
 				}
-				newJob, err := runJob(jobToRun)
-				if err != nil {
-					log.Printf("error while running job '%s': %s", jobToRun, err.Error())
-					continue
+				for _, jobToRun := range jobsToTrigger {
+					newJob, err := runJob(jobToRun)
+					if err != nil {
+						log.Printf("error while running job '%s': %s", jobToRun, err.Error())
+						continue
+					}
+					runningJobs = append(runningJobs, *newJob)
 				}
-				runningJobs = append(runningJobs, *newJob)
 			}
 		}
 
