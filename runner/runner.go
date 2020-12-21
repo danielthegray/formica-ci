@@ -150,7 +150,7 @@ func jobsToTrigger(jobName string) []string {
 	existingJobs.Lock()
 	defer existingJobs.Unlock()
 	var jobs []string
-	jobPrefix := jobName + "/"
+	jobPrefix := jobName + string(os.PathSeparator)
 	for _, validJobName := range existingJobs.jobs {
 		if validJobName == jobName || strings.HasPrefix(validJobName, jobPrefix) {
 			jobs = append(jobs, validJobName)
@@ -292,7 +292,7 @@ func launchJobRunner() (receiver chan<- string, stopNotifier chan<- struct{}) {
 	return jobReceiver, runnerStopEvent
 }
 
-func launchJobQueueListener(jobReceiver chan<- string) chan<- struct{} {
+func launchJobQueueListener(jobRunner chan<- string) chan<- struct{} {
 	jobQueueStopEvent := make(chan struct{}, 1)
 	_ = os.Mkdir(jobQueue, 0777)
 	queuePollDelay := 1 * time.Second
@@ -318,7 +318,7 @@ func launchJobQueueListener(jobReceiver chan<- string) chan<- struct{} {
 						log.Printf("error while opening job file %s: %s", fullJobFilename, err.Error())
 					} else {
 						jobName := strings.TrimSpace(string(specifiedJob))
-						jobReceiver <- jobName
+						jobRunner <- jobName
 						log.Printf("Found job %s in %s", jobName, fullJobFilename)
 					}
 					err = os.Remove(fullJobFilename)
@@ -364,12 +364,15 @@ func fetchVersionsOfJobs() *map[string]string {
 	}
 	versionsOfJobs := make(map[string]string)
 	for versionedJob, versionBuffer := range versions {
-		versionsOfJobs[versionedJob] = versionBuffer.String()
+		jobsUnderVersion := jobsToTrigger(versionedJob)
+		for _, jobUnderVersion := range jobsUnderVersion {
+			versionsOfJobs[jobUnderVersion] = versionBuffer.String()
+		}
 	}
 	return &versionsOfJobs
 }
 
-func getLatestRunVersion() *map[string]string {
+func getVersionsOfLatestRuns() *map[string]string {
 	versionsForRun := make(map[string]string)
 	_, err := os.Stat(formicaRuns)
 	if os.IsNotExist(err) {
@@ -402,15 +405,22 @@ func getLatestRunVersion() *map[string]string {
 				latestJobRun = jobRunNumber
 			}
 		}
-		versionTagOfRun, err := ioutil.ReadFile(filepath.Join(formicaRuns, job, strconv.Itoa(latestJobRun), versionTag))
+		versionTagFile := filepath.Join(formicaRuns, job, strconv.Itoa(latestJobRun), versionTag)
+		versionTagOfRun, err := ioutil.ReadFile(versionTagFile)
 		if os.IsNotExist(err) {
 			// no version tag in the job run means that the job is not versioned
 			continue
 		}
+		if err != nil {
+			log.Printf("error while reader %s file: %s", versionTagFile, err.Error())
+			continue
+		}
+		versionsForRun[job] = string(versionTagOfRun)
 	}
+	return &versionsForRun
 }
 
-func setupVersionedJobs(jobReceiver chan<- string) chan<- struct{} {
+func setupVersionedJobs(jobRunner chan<- string) chan<- struct{} {
 	versionedAutoJobsStopEvent := make(chan struct{}, 1)
 	pollDelay := 60 * time.Second
 
@@ -420,7 +430,13 @@ func setupVersionedJobs(jobReceiver chan<- string) chan<- struct{} {
 			case <-versionedAutoJobsStopEvent:
 				return
 			case <-time.After(pollDelay):
-				versionsOfJobs := fetchVersionsOfJobs()
+				versionsOfJobs := *fetchVersionsOfJobs()
+				lastSeenVersions := *getVersionsOfLatestRuns()
+				for jobName, newVersion := range versionsOfJobs {
+					if newVersion != lastSeenVersions[jobName] {
+						jobRunner <- jobName
+					}
+				}
 			}
 		}
 
@@ -440,8 +456,8 @@ func Start(shutdownNotifiers *ShutdownNotifiers) {
 		log.Fatalf("configuration is not updateable: %s", err)
 	}
 	updaterStop := launchBackgroundUpdater()
-	jobReceiver, jobRunnerStop := launchJobRunner()
-	jobQueueListenerStop := launchJobQueueListener(jobReceiver)
+	jobRunner, jobRunnerStop := launchJobRunner()
+	jobQueueListenerStop := launchJobQueueListener(jobRunner)
 
 	log.Println("Formica CI is now running")
 
