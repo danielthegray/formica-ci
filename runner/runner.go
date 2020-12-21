@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,10 +18,12 @@ const configFolder = "formica_conf"
 const configInitPrefix = "config_init"
 const updatePrefix = "update"
 const agentInitPrefix = "agent_init"
+const versionCheckPrefix = "version_check"
 const runPrefix = "run"
 const generatePrefix = "gen"
 const jobQueue = "job_queue"
 const formicaRuns = "formica_runs"
+const versionTag = "version.tag"
 
 const stdoutPrefix = "stdout"
 const stderrPrefix = "stderr"
@@ -35,7 +38,13 @@ type ShutdownNotifiers struct {
 	ForceTermination <-chan struct{}
 }
 
-var existingJobs []string
+type jobList struct {
+	sync.Mutex
+	jobs []string
+}
+
+var existingJobs jobList
+var versionedJobs jobList
 
 func fetchConfigFolder() error {
 	currentDir, err := os.Getwd()
@@ -91,7 +100,10 @@ func updateConfig() error {
 }
 
 func reloadJobs() error {
-	existingJobs = nil
+	existingJobs.Lock()
+	defer existingJobs.Unlock()
+	versionedJobs.Lock()
+	defer versionedJobs.Unlock()
 	// TODO: deal with jobs that have disappeared but are still running
 	// TODO: deal with new jobs
 	// TODO: deal with existing jobs
@@ -99,11 +111,16 @@ func reloadJobs() error {
 		if err != nil {
 			return err
 		}
-		if !info.IsDir() && strings.HasPrefix(info.Name(), agentInitPrefix) {
-			jobPathSegments := strings.SplitN(path.Dir(file), string(os.PathSeparator), 2)
-			jobPath := jobPathSegments[1]
-			log.Printf("Found job %s", jobPath)
-			existingJobs = append(existingJobs, jobPath)
+		if !info.IsDir() {
+			jobPathConfigSplit := strings.SplitN(path.Dir(file), string(os.PathSeparator), 2)
+			jobPath := jobPathConfigSplit[1]
+			if strings.HasPrefix(info.Name(), agentInitPrefix) {
+				log.Printf("Found job %s", jobPath)
+				existingJobs.jobs = append(existingJobs.jobs, jobPath)
+			}
+			if strings.HasPrefix(info.Name(), versionCheckPrefix) {
+				versionedJobs.jobs = append(versionedJobs.jobs, jobPath)
+			}
 		}
 		return nil
 	})
@@ -130,9 +147,11 @@ func launchBackgroundUpdater() chan<- struct{} {
 }
 
 func jobsToTrigger(jobName string) []string {
+	existingJobs.Lock()
+	defer existingJobs.Unlock()
 	var jobs []string
 	jobPrefix := jobName + "/"
-	for _, validJobName := range existingJobs {
+	for _, validJobName := range existingJobs.jobs {
 		if validJobName == jobName || strings.HasPrefix(validJobName, jobPrefix) {
 			jobs = append(jobs, validJobName)
 		}
@@ -269,7 +288,6 @@ func launchJobRunner() (receiver chan<- string, stopNotifier chan<- struct{}) {
 				}
 			}
 		}
-
 	}()
 	return jobReceiver, runnerStopEvent
 }
@@ -312,6 +330,103 @@ func launchJobQueueListener(jobReceiver chan<- string) chan<- struct{} {
 		}
 	}()
 	return jobQueueStopEvent
+}
+
+func fetchVersionsOfJobs() *map[string]string {
+	versionedJobs.Lock()
+	currentVersionedJobs := versionedJobs.jobs[:]
+	versionedJobs.Unlock()
+	versions := make(map[string]*strings.Builder)
+	versionCheckStderrs := make(map[string]*strings.Builder)
+	versionCmds := make(map[string]*exec.Cmd)
+	for _, versionedJob := range currentVersionedJobs {
+		versionCheckScript, err := FindScript(versionedJob, versionCheckPrefix)
+		if err != nil {
+			log.Printf("error while searching for %s script: %s", versionCheckPrefix, err.Error())
+		}
+		versionStdout := &strings.Builder{}
+		versionStderr := &strings.Builder{}
+		emptyReader := strings.NewReader("")
+		versionCheckCommand := PrepareCommand(versionedJob, versionCheckScript, emptyReader, versionStdout, versionStderr)
+		versions[versionedJob] = versionStdout
+		versionCheckStderrs[versionedJob] = versionStderr
+		versionCmds[versionedJob] = versionCheckCommand
+		err = versionCheckCommand.Start()
+		if err != nil {
+			log.Printf("error while checking version of job %s: %s", versionedJob, err.Error())
+		}
+	}
+	for versionedJob, versionCmd := range versionCmds {
+		err := versionCmd.Wait()
+		if err != nil {
+			log.Printf("error while waiting for version check of %s to finish:\nError message: %s\nstderr output:%s", versionedJob, err.Error(), versionCheckStderrs[versionedJob])
+		}
+	}
+	versionsOfJobs := make(map[string]string)
+	for versionedJob, versionBuffer := range versions {
+		versionsOfJobs[versionedJob] = versionBuffer.String()
+	}
+	return &versionsOfJobs
+}
+
+func getLatestRunVersion() *map[string]string {
+	versionsForRun := make(map[string]string)
+	_, err := os.Stat(formicaRuns)
+	if os.IsNotExist(err) {
+		return &versionsForRun
+	}
+	if err != nil {
+		log.Printf("error while checking %s folder for version tags: %s", formicaRuns, err.Error())
+	}
+	existingJobs.Lock()
+	jobs := existingJobs.jobs[:]
+	existingJobs.Unlock()
+	for _, job := range jobs {
+		jobRuns, err := ioutil.ReadDir(filepath.Join(formicaRuns, job))
+		if err != nil {
+			log.Printf("error while checking runs of job %s for version tags: %s", job, err.Error())
+			continue
+		}
+		latestJobRun := -1
+		for _, jobRun := range jobRuns {
+			if !jobRun.IsDir() {
+				// job runs are only folders
+				continue
+			}
+			jobRunNumber, err := strconv.Atoi(jobRun.Name())
+			if err != nil {
+				// non-numeric folders are not job runs
+				continue
+			}
+			if latestJobRun < jobRunNumber {
+				latestJobRun = jobRunNumber
+			}
+		}
+		versionTagOfRun, err := ioutil.ReadFile(filepath.Join(formicaRuns, job, strconv.Itoa(latestJobRun), versionTag))
+		if os.IsNotExist(err) {
+			// no version tag in the job run means that the job is not versioned
+			continue
+		}
+	}
+}
+
+func setupVersionedJobs(jobReceiver chan<- string) chan<- struct{} {
+	versionedAutoJobsStopEvent := make(chan struct{}, 1)
+	pollDelay := 60 * time.Second
+
+	go func() {
+		for {
+			select {
+			case <-versionedAutoJobsStopEvent:
+				return
+			case <-time.After(pollDelay):
+				versionsOfJobs := fetchVersionsOfJobs()
+			}
+		}
+
+	}()
+
+	return versionedAutoJobsStopEvent
 }
 
 // Start initializes the job runner
