@@ -95,14 +95,14 @@ func (err *FindScriptError) IsManyScriptsFoundError() bool {
 	return len(err.foundScripts) > 1
 }
 
-func newScriptNotFoundError(scriptFolder, scriptName string) FindScriptError {
-	return FindScriptError{
+func newScriptNotFoundError(scriptFolder, scriptName string) *FindScriptError {
+	return &FindScriptError{
 		text:         fmt.Sprintf("no %s script found in %s", scriptName, scriptFolder),
 		foundScripts: []string{},
 	}
 }
-func newTooManyScriptsError(scriptFolder, scriptName string, foundScripts []string) FindScriptError {
-	return FindScriptError{
+func newTooManyScriptsError(scriptFolder, scriptName string, foundScripts []string) *FindScriptError {
+	return &FindScriptError{
 		text:         fmt.Sprintf("too many scripts for %s found in %s", scriptName, scriptFolder),
 		foundScripts: foundScripts,
 	}
@@ -111,11 +111,11 @@ func newTooManyScriptsError(scriptFolder, scriptName string, foundScripts []stri
 // FindScript looks for a script with a certain prefix/name in the specified folder
 // since most jobs in Formica CI are done with scripts, the name of the script will
 // define what job it is called for
-func FindScript(scriptFolder string, scriptPrefix string) (string, error) {
+func FindScript(scriptFolder string, scriptPrefix string) (string, *FindScriptError) {
 	var matchingScripts []string
 	filesInFolder, err := ioutil.ReadDir(scriptFolder)
 	if err != nil {
-		log.Fatalf("Failed listing directory: %s", err)
+		log.Fatalf("Failed listing directory '%s' for script search", err)
 	}
 	// we look for files in the folder which start with the script name
 	for _, file := range filesInFolder {
@@ -127,10 +127,10 @@ func FindScript(scriptFolder string, scriptPrefix string) (string, error) {
 		}
 	}
 	if len(matchingScripts) == 0 {
-		return "", fmt.Errorf("no %s script found in %s", scriptPrefix, scriptFolder)
+		return "", newScriptNotFoundError(scriptFolder, scriptPrefix)
 	}
 	if len(matchingScripts) > 1 {
-		return "", fmt.Errorf("too many %s scripts found in %s", scriptPrefix, scriptFolder)
+		return "", newTooManyScriptsError(scriptFolder, scriptPrefix, matchingScripts)
 	}
 	return matchingScripts[0], nil
 }
@@ -234,8 +234,8 @@ func PrepareCommand(parentFolder, scriptFile string, stdin io.Reader, stdout io.
 	}
 }
 
-// ExecuteScript runs a script located inside a specified path
-func ExecuteScript(parentPath, scriptFilename string) (string, error) {
+// OutputOfExecuting runs a script located inside a specified path, and returns the stdout output in a string, or a potential error
+func OutputOfExecuting(parentPath, scriptFilename string) (string, error) {
 	output := new(bytes.Buffer)
 	emptyReader := strings.NewReader("")
 	scriptCommand := PrepareCommand(parentPath, scriptFilename, emptyReader, output, ioutil.Discard)

@@ -57,7 +57,7 @@ func fetchConfigFolder() error {
 		log.Println("Error when finding the script")
 		return err
 	}
-	_, err = ExecuteScript(currentDir, scriptName)
+	_, err = OutputOfExecuting(currentDir, scriptName)
 	if err != nil {
 		log.Println("Error when executing the script")
 		return err
@@ -90,8 +90,8 @@ func updateConfig() error {
 		return fmt.Errorf("error while finding update script in configuration: %s", err.Error())
 	}
 	if UpdateEnabled {
-		_, err = ExecuteScript(configFolder, updateScriptFile)
-		if err != nil {
+		_, updateErr := OutputOfExecuting(configFolder, updateScriptFile)
+		if updateErr != nil {
 			return fmt.Errorf("error while updating configuration: %s", err.Error())
 		}
 	}
@@ -113,12 +113,19 @@ func reloadJobs() error {
 		}
 		if !info.IsDir() {
 			jobPathConfigSplit := strings.SplitN(path.Dir(file), string(os.PathSeparator), 2)
+			if len(jobPathConfigSplit) < 2 {
+				return nil
+			}
 			jobPath := jobPathConfigSplit[1]
+			if strings.HasPrefix(jobPath, ".") {
+				return nil
+			}
 			if strings.HasPrefix(info.Name(), agentInitPrefix) {
 				log.Printf("Found job %s", jobPath)
 				existingJobs.jobs = append(existingJobs.jobs, jobPath)
 			}
 			if strings.HasPrefix(info.Name(), versionCheckPrefix) {
+				log.Printf("Found versioned job: %s", jobPath)
 				versionedJobs.jobs = append(versionedJobs.jobs, jobPath)
 			}
 		}
@@ -159,30 +166,49 @@ func jobsToTrigger(jobName string) []string {
 	return jobs
 }
 
+// FindScriptInJobOrParents looks for a script not only in a job folder but in the entire hierarchy of jobs/job-groups
+// and returns the folder and script name where the sought for script is, and a potential error
+func FindScriptInJobOrParents(jobName string, scriptName string) (string, string, error) {
+	scriptLocation := filepath.Join(configFolder, jobName)
+	for filepath.Base(scriptLocation) != configFolder {
+		script, findErr := FindScript(scriptLocation, scriptName)
+		if findErr == nil {
+			return scriptLocation, script, nil
+		}
+		if !findErr.IsNoScriptFoundError() {
+			return "", "", findErr
+		}
+		scriptLocation = filepath.Dir(scriptLocation)
+	}
+	// we did not find the script in the job or any parent, so there is no related script in the job's hierarchy
+	return "", "", nil
+}
+
 func generateJobRunCode(jobName string) (string, error) {
 	jobFolder := filepath.Join(configFolder, jobName)
 	// we only run this script if it is found, if not, then no problem
 	localScriptOutput := ""
-	runLocalScript, err := FindScript(jobFolder, generatePrefix)
-	if err == nil {
-		localScriptOutput, err = ExecuteScript(jobFolder, runLocalScript)
-		if err != nil {
-			return "", fmt.Errorf("error while running %s script: %s", generatePrefix, err.Error())
+	runLocalScript, findErr := FindScript(jobFolder, generatePrefix)
+	if findErr == nil {
+		var runLocalErr error
+		localScriptOutput, runLocalErr = OutputOfExecuting(jobFolder, runLocalScript)
+		if runLocalErr != nil {
+			return "", fmt.Errorf("error while running %s script: %s", generatePrefix, runLocalErr.Error())
 		}
 	}
 	// the run script is transferred and run on the remote machine
-	runScript, err := FindScript(jobFolder, runPrefix)
-	if err != nil {
-		return "", fmt.Errorf("couldn't find %s script for job %s: %s", runPrefix, jobName, err.Error())
+	runScript, findErr := FindScript(jobFolder, runPrefix)
+	if findErr != nil {
+		return "", fmt.Errorf("couldn't find %s script for job %s: %s", runPrefix, jobName, findErr.Error())
 	}
-	jobScript, err := TransferAndRunScriptCommand(filepath.Join(jobFolder, runScript), "/tmp/formica_agent")
-	if err != nil {
-		return "", fmt.Errorf("error while preparing job run script: %s", err.Error())
+	jobScript, transferErr := TransferAndRunScriptCommand(filepath.Join(jobFolder, runScript), "/tmp/formica_agent")
+	if transferErr != nil {
+		return "", fmt.Errorf("error while preparing job run script: %s", transferErr.Error())
 	}
 	// we combine the locally generated shell code + the job transfer/run commands
 	jobScript = localScriptOutput + jobScript
 
-	log.Printf("The job scripts is %s", jobScript)
+	log.Printf("The job scripts is %?versios", jobScript)
 
 	return jobScript, nil
 }
@@ -222,24 +248,45 @@ func prepareRunFolder(jobName string) (string, error) {
 	return runFolder, nil
 }
 
+func saveAndExportJobVersion(jobRunFolder, jobName string) (string, error) {
+	versionScriptLocation, versionScript, err := FindScriptInJobOrParents(jobName, versionCheckPrefix)
+	if err != nil {
+		return "", fmt.Errorf("error while loading job %s version check script: %s", jobName, err.Error())
+	}
+	if versionScript != "" {
+		jobVersion, err := OutputOfExecuting(versionScriptLocation, versionScript)
+		if err != nil {
+			return "", fmt.Errorf("error when executing version check script for job %s: %s", jobName, err.Error())
+		}
+		err = ioutil.WriteFile(filepath.Join(jobRunFolder, versionTag), []byte(jobVersion), 0644)
+		if err != nil {
+			return "", fmt.Errorf("error when writing version tag for job %s: %s", jobName, err.Error())
+		}
+		return fmt.Sprintf("export JOB_VERSION='%s'\n", jobVersion), nil
+	}
+	return "", nil
+}
+
 func runJob(jobName string) (*exec.Cmd, error) {
 	jobFolder := filepath.Join(configFolder, jobName)
 	log.Printf("Launching job from %s", jobFolder)
-	agentInitScript, err := FindScript(jobFolder, agentInitPrefix)
-	if err != nil {
-		return nil, fmt.Errorf("error while searching for %s script: %s", agentInitPrefix, err.Error())
+	agentInitScript, findErr := FindScript(jobFolder, agentInitPrefix)
+	if findErr != nil {
+		return nil, fmt.Errorf("error while searching for %s script: %s", agentInitPrefix, findErr.Error())
 	}
 
 	jobScript, err := generateJobRunCode(jobName)
 	if err != nil {
 		return nil, fmt.Errorf("error while preparing job run code: %s", err.Error())
 	}
-
 	jobRunFolder, err := prepareRunFolder(jobName)
 	if err != nil {
 		return nil, fmt.Errorf("error while setting up job run folder: %s", err.Error())
 	}
-
+	versionExportScript, err := saveAndExportJobVersion(jobRunFolder, jobName)
+	if err != nil {
+		return nil, err
+	}
 	stdoutWriter, err := BuildTimestampedLogger(jobRunFolder, stdoutPrefix)
 	if err != nil {
 		return nil, err
@@ -249,7 +296,7 @@ func runJob(jobName string) (*exec.Cmd, error) {
 		return nil, err
 	}
 
-	stdin := strings.NewReader(jobScript)
+	stdin := strings.NewReader(versionExportScript + jobScript)
 	newJob := PrepareCommand(jobFolder, agentInitScript, stdin, stdoutWriter, stderrWriter)
 	newJob.Start()
 	go func() {
@@ -340,18 +387,19 @@ func fetchVersionsOfJobs() *map[string]string {
 	versionCheckStderrs := make(map[string]*strings.Builder)
 	versionCmds := make(map[string]*exec.Cmd)
 	for _, versionedJob := range currentVersionedJobs {
-		versionCheckScript, err := FindScript(versionedJob, versionCheckPrefix)
-		if err != nil {
-			log.Printf("error while searching for %s script: %s", versionCheckPrefix, err.Error())
+		versionedJobFolder := filepath.Join(configFolder, versionedJob)
+		versionCheckScript, findErr := FindScript(versionedJobFolder, versionCheckPrefix)
+		if findErr != nil {
+			log.Printf("error while searching for %s script: %s", versionCheckPrefix, findErr.Error())
 		}
 		versionStdout := &strings.Builder{}
 		versionStderr := &strings.Builder{}
 		emptyReader := strings.NewReader("")
-		versionCheckCommand := PrepareCommand(versionedJob, versionCheckScript, emptyReader, versionStdout, versionStderr)
+		versionCheckCommand := PrepareCommand(versionedJobFolder, versionCheckScript, emptyReader, versionStdout, versionStderr)
 		versions[versionedJob] = versionStdout
 		versionCheckStderrs[versionedJob] = versionStderr
 		versionCmds[versionedJob] = versionCheckCommand
-		err = versionCheckCommand.Start()
+		err := versionCheckCommand.Start()
 		if err != nil {
 			log.Printf("error while checking version of job %s: %s", versionedJob, err.Error())
 		}
@@ -366,6 +414,7 @@ func fetchVersionsOfJobs() *map[string]string {
 	for versionedJob, versionBuffer := range versions {
 		jobsUnderVersion := jobsToTrigger(versionedJob)
 		for _, jobUnderVersion := range jobsUnderVersion {
+			log.Printf("Job %s is now at version %s", jobUnderVersion, versionBuffer.String())
 			versionsOfJobs[jobUnderVersion] = versionBuffer.String()
 		}
 	}
@@ -386,6 +435,10 @@ func getVersionsOfLatestRuns() *map[string]string {
 	existingJobs.Unlock()
 	for _, job := range jobs {
 		jobRuns, err := ioutil.ReadDir(filepath.Join(formicaRuns, job))
+		if os.IsNotExist(err) {
+			// no run yet, so no version
+			continue
+		}
 		if err != nil {
 			log.Printf("error while checking runs of job %s for version tags: %s", job, err.Error())
 			continue
@@ -433,13 +486,16 @@ func setupVersionedJobs(jobRunner chan<- string) chan<- struct{} {
 				versionsOfJobs := *fetchVersionsOfJobs()
 				lastSeenVersions := *getVersionsOfLatestRuns()
 				for jobName, newVersion := range versionsOfJobs {
+					if newVersion == "" {
+						log.Printf("Job %s has a blank version!", jobName)
+					}
+					log.Printf("Versioned job %s was last run with version %s and version %s is available", jobName, lastSeenVersions[jobName], newVersion)
 					if newVersion != lastSeenVersions[jobName] {
 						jobRunner <- jobName
 					}
 				}
 			}
 		}
-
 	}()
 
 	return versionedAutoJobsStopEvent
@@ -458,6 +514,7 @@ func Start(shutdownNotifiers *ShutdownNotifiers) {
 	updaterStop := launchBackgroundUpdater()
 	jobRunner, jobRunnerStop := launchJobRunner()
 	jobQueueListenerStop := launchJobQueueListener(jobRunner)
+	versionedJobListenerStop := setupVersionedJobs(jobRunner)
 
 	log.Println("Formica CI is now running")
 
@@ -468,6 +525,7 @@ func Start(shutdownNotifiers *ShutdownNotifiers) {
 			updaterStop <- struct{}{}
 			jobRunnerStop <- struct{}{}
 			jobQueueListenerStop <- struct{}{}
+			versionedJobListenerStop <- struct{}{}
 			break
 		case <-shutdownNotifiers.Immediate:
 			break
