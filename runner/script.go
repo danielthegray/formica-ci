@@ -15,6 +15,9 @@ import (
 	"time"
 )
 
+// Prefix is a type specific for script prefixes
+type Prefix string
+
 // TimestampedLogger is a WriteCloser implementation that outputs to a normal log file, as well as
 // to another file with one UNIX epoch timestamp per line written (to match up later)
 type TimestampedLogger struct {
@@ -95,15 +98,15 @@ func (err *FindScriptError) IsManyScriptsFoundError() bool {
 	return len(err.foundScripts) > 1
 }
 
-func newScriptNotFoundError(scriptFolder, scriptName string) *FindScriptError {
+func newScriptNotFoundError(scriptFolder string, scriptPrefix Prefix) *FindScriptError {
 	return &FindScriptError{
-		text:         fmt.Sprintf("no %s script found in %s", scriptName, scriptFolder),
+		text:         fmt.Sprintf("no %s script found in %s", scriptPrefix, scriptFolder),
 		foundScripts: []string{},
 	}
 }
-func newTooManyScriptsError(scriptFolder, scriptName string, foundScripts []string) *FindScriptError {
+func newTooManyScriptsError(scriptFolder string, scriptPrefix Prefix, foundScripts []string) *FindScriptError {
 	return &FindScriptError{
-		text:         fmt.Sprintf("too many scripts for %s found in %s", scriptName, scriptFolder),
+		text:         fmt.Sprintf("too many scripts for %s found in %s", scriptPrefix, scriptFolder),
 		foundScripts: foundScripts,
 	}
 }
@@ -111,7 +114,7 @@ func newTooManyScriptsError(scriptFolder, scriptName string, foundScripts []stri
 // FindScript looks for a script with a certain prefix/name in the specified folder
 // since most jobs in Formica CI are done with scripts, the name of the script will
 // define what job it is called for
-func FindScript(scriptFolder string, scriptPrefix string) (string, *FindScriptError) {
+func FindScript(scriptFolder string, scriptPrefix Prefix) (string, *FindScriptError) {
 	var matchingScripts []string
 	filesInFolder, err := ioutil.ReadDir(scriptFolder)
 	if err != nil {
@@ -122,7 +125,7 @@ func FindScript(scriptFolder string, scriptPrefix string) (string, *FindScriptEr
 		if file.IsDir() {
 			continue
 		}
-		if strings.HasPrefix(file.Name(), scriptPrefix) {
+		if strings.HasPrefix(file.Name(), string(scriptPrefix)) {
 			matchingScripts = append(matchingScripts, file.Name())
 		}
 	}

@@ -14,13 +14,14 @@ import (
 	"time"
 )
 
-const configFolder = "formica_conf"
-const configInitPrefix = "config_init"
-const updatePrefix = "update"
-const agentInitPrefix = "agent_init"
-const versionCheckPrefix = "version_check"
-const runPrefix = "run"
-const generatePrefix = "gen"
+const configFolder string = "formica_conf"
+const configInitPrefix Prefix = "config_init"
+const updatePrefix Prefix = "update"
+const agentInitPrefix Prefix = "agent_init"
+const agentCleanupPrefix Prefix = "agent_cleanup"
+const versionCheckPrefix Prefix = "version_check"
+const runPrefix Prefix = "run"
+const generatePrefix Prefix = "gen"
 const jobQueue = "job_queue"
 const formicaRuns = "formica_runs"
 const versionTag = "version.tag"
@@ -120,11 +121,11 @@ func reloadJobs() error {
 			if strings.HasPrefix(jobPath, ".") {
 				return nil
 			}
-			if strings.HasPrefix(info.Name(), agentInitPrefix) {
+			if strings.HasPrefix(info.Name(), string(agentInitPrefix)) {
 				log.Printf("Found job %s", jobPath)
 				existingJobs.jobs = append(existingJobs.jobs, jobPath)
 			}
-			if strings.HasPrefix(info.Name(), versionCheckPrefix) {
+			if strings.HasPrefix(info.Name(), string(versionCheckPrefix)) {
 				log.Printf("Found versioned job: %s", jobPath)
 				versionedJobs.jobs = append(versionedJobs.jobs, jobPath)
 			}
@@ -168,10 +169,10 @@ func jobsToTrigger(jobName string) []string {
 
 // FindScriptInJobOrParents looks for a script not only in a job folder but in the entire hierarchy of jobs/job-groups
 // and returns the folder and script name where the sought for script is, and a potential error
-func FindScriptInJobOrParents(jobName string, scriptName string) (string, string, error) {
+func FindScriptInJobOrParents(jobName string, scriptPrefix Prefix) (string, string, error) {
 	scriptLocation := filepath.Join(configFolder, jobName)
 	for filepath.Base(scriptLocation) != configFolder {
-		script, findErr := FindScript(scriptLocation, scriptName)
+		script, findErr := FindScript(scriptLocation, scriptPrefix)
 		if findErr == nil {
 			return scriptLocation, script, nil
 		}
