@@ -297,13 +297,22 @@ func runJob(jobName string) (*exec.Cmd, error) {
 		return nil, err
 	}
 
-	stdin := strings.NewReader(versionExportScript + jobScript)
+	runFileEnvVariable := fmt.Sprintf("export FORMICA_RUN='%s'\n", jobRunFolder)
+	stdin := strings.NewReader(versionExportScript + runFileEnvVariable + jobScript)
 	newJob := PrepareCommand(jobFolder, agentInitScript, stdin, stdoutWriter, stderrWriter)
 	newJob.Start()
 	go func() {
 		defer stdoutWriter.Close()
 		defer stderrWriter.Close()
 		newJob.Wait()
+		agentCleanupScript, findErr := FindScript(jobRunFolder, agentCleanupPrefix)
+		if findErr != nil {
+			log.Printf("error while looking for cleanup script of job '%s': %s", jobName, err.Error())
+		}
+		_, err := OutputOfExecuting(jobRunFolder, agentCleanupScript)
+		if err != nil {
+			log.Printf("error while cleaning up agent for job '%s': %s", jobName, err.Error())
+		}
 	}()
 	return newJob, nil
 }
