@@ -18,6 +18,9 @@ import (
 // Prefix is a type specific for script prefixes
 type Prefix string
 
+// FormicaScript is a type specific for scripts that corrrespond to a prefix (to ensure that the correct process is followed)
+type FormicaScript string
+
 // TimestampedLogger is a WriteCloser implementation that outputs to a normal log file, as well as
 // to another file with one UNIX epoch timestamp per line written (to match up later)
 type TimestampedLogger struct {
@@ -114,7 +117,7 @@ func newTooManyScriptsError(scriptFolder string, scriptPrefix Prefix, foundScrip
 // FindScript looks for a script with a certain prefix/name in the specified folder
 // since most jobs in Formica CI are done with scripts, the name of the script will
 // define what job it is called for
-func FindScript(scriptFolder string, scriptPrefix Prefix) (string, *FindScriptError) {
+func FindScript(scriptFolder string, scriptPrefix Prefix) (FormicaScript, *FindScriptError) {
 	var matchingScripts []string
 	filesInFolder, err := ioutil.ReadDir(scriptFolder)
 	if err != nil {
@@ -201,7 +204,7 @@ func TransferAndRunScriptCommand(localFile, remoteExecDir string) (string, error
 }
 
 // PrepareCommand sets up a command ready to be executed and wires in stdin/stdout/stderr readers/writers
-func PrepareCommand(parentFolder, scriptFile string, stdin io.Reader, stdout io.Writer, stderr io.Writer) *exec.Cmd {
+func PrepareCommand(parentFolder string, scriptFile FormicaScript, stdin io.Reader, stdout io.Writer, stderr io.Writer) *exec.Cmd {
 	log.Printf("Running script %s in folder %s", scriptFile, parentFolder)
 	if !strings.HasPrefix(parentFolder, "/") {
 		currentDir, err := os.Getwd()
@@ -238,10 +241,10 @@ func PrepareCommand(parentFolder, scriptFile string, stdin io.Reader, stdout io.
 }
 
 // OutputOfExecuting runs a script located inside a specified path, and returns the stdout output in a string, or a potential error
-func OutputOfExecuting(parentPath, scriptFilename string) (string, error) {
+func OutputOfExecuting(parentPath string, script FormicaScript) (string, error) {
 	output := new(bytes.Buffer)
 	emptyReader := strings.NewReader("")
-	scriptCommand := PrepareCommand(parentPath, scriptFilename, emptyReader, output, ioutil.Discard)
+	scriptCommand := PrepareCommand(parentPath, script, emptyReader, output, ioutil.Discard)
 	err := scriptCommand.Run()
 	if err != nil {
 		return "", err
