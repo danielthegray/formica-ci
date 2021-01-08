@@ -91,11 +91,27 @@ func ensureConfigFolderPresent() error {
 }
 
 func updateConfig() error {
-	updateScriptFile, err := FindScript(configFolder, updatePrefix)
-	if err != nil {
-		return fmt.Errorf("error while finding update script in configuration: %s", err.Error())
+	updateScriptFile, findErr := FindScript(configFolder, configUpdate)
+	if findErr != nil {
+		return fmt.Errorf("error while finding update script in configuration: %s", findErr.Error())
 	}
-	if UpdateEnabled {
+	localVersionScript, findErr := FindScript(configFolder, configLocalVersion)
+	if findErr != nil {
+		return fmt.Errorf("error while finding local version check script in configuration: %s", findErr.Error())
+	}
+	remoteVersionScript, findErr := FindScript(configFolder, configRemoteVersion)
+	if findErr != nil {
+		return fmt.Errorf("error while finding remote version check script in configuration: %s", findErr.Error())
+	}
+	localVersion, err := OutputOfExecuting(configFolder, localVersionScript)
+	if err != nil {
+		return fmt.Errorf("error while checking local version of configuration: %s", err.Error())
+	}
+	remoteVersion, err := OutputOfExecuting(configFolder, remoteVersionScript)
+	if err != nil {
+		return fmt.Errorf("error while checking remote version of configuration: %s", err.Error())
+	}
+	if localVersion != remoteVersion {
 		_, updateErr := OutputOfExecuting(configFolder, updateScriptFile)
 		if updateErr != nil {
 			return fmt.Errorf("error while updating configuration: %s", err.Error())
