@@ -15,6 +15,10 @@ import (
 )
 
 const configFolder string = "formica_conf"
+const jobQueue = "job_queue"
+const formicaRuns = "formica_runs"
+const versionTag = "version.tag"
+
 const configInit Prefix = "config_init"
 const configRemoteVersion Prefix = "config_version_remote"
 const configLocalVersion Prefix = "config_version_local"
@@ -27,15 +31,8 @@ const branchList Prefix = "branch_list"
 const run Prefix = "run"
 const generate Prefix = "gen"
 
-const jobQueue = "job_queue"
-const formicaRuns = "formica_runs"
-const versionTag = "version.tag"
-
 const stdoutPrefix = "stdout"
 const stderrPrefix = "stderr"
-
-// UpdateEnabled set to true at launch will enable live updating of the configuration
-const UpdateEnabled = false
 
 // ShutdownNotifiers is a collection of channels used to notify of different shutdown events
 type ShutdownNotifiers struct {
@@ -58,14 +55,9 @@ func fetchConfigFolder() error {
 		log.Println("Error when getting the current dir")
 		return err
 	}
-	scriptName, err := FindScript(currentDir, configInit)
+	_, err = FindAndExecute(currentDir, configInit)
 	if err != nil {
-		log.Println("Error when finding the script")
-		return err
-	}
-	_, err = OutputOfExecuting(currentDir, scriptName)
-	if err != nil {
-		log.Println("Error when executing the script")
+		log.Println("Error when fetching the configuration folder! %s", err.Error())
 		return err
 	}
 	return nil
@@ -95,19 +87,11 @@ func updateConfig() error {
 	if findErr != nil {
 		return fmt.Errorf("error while finding update script in configuration: %s", findErr.Error())
 	}
-	localVersionScript, findErr := FindScript(configFolder, configLocalVersion)
-	if findErr != nil {
-		return fmt.Errorf("error while finding local version check script in configuration: %s", findErr.Error())
-	}
-	remoteVersionScript, findErr := FindScript(configFolder, configRemoteVersion)
-	if findErr != nil {
-		return fmt.Errorf("error while finding remote version check script in configuration: %s", findErr.Error())
-	}
-	localVersion, err := OutputOfExecuting(configFolder, localVersionScript)
+	localVersion, err := FindAndExecute(configFolder, configLocalVersion)
 	if err != nil {
 		return fmt.Errorf("error while checking local version of configuration: %s", err.Error())
 	}
-	remoteVersion, err := OutputOfExecuting(configFolder, remoteVersionScript)
+	remoteVersion, err := FindAndExecute(configFolder, configRemoteVersion)
 	if err != nil {
 		return fmt.Errorf("error while checking remote version of configuration: %s", err.Error())
 	}
@@ -157,8 +141,8 @@ func reloadJobs() error {
 
 func launchBackgroundUpdater() chan<- struct{} {
 	updaterStopEvent := make(chan struct{}, 1)
-	// TODO: parse from config
-	jobUpdateDelay := 5 * time.Minute
+	// we can "afford" to do this every 30 seconds because our version checking is fairly lightweight
+	jobUpdateDelay := 30 * time.Second
 	go func() {
 		for {
 			select {

@@ -240,6 +240,15 @@ func PrepareCommand(parentFolder string, scriptFile FormicaScript, stdin io.Read
 	}
 }
 
+// FindAndExecute will find a script with the desired prefix in the specified folder and execute it
+func FindAndExecute(parentPath string, scriptPrefix Prefix) (string, error) {
+	script, findErr := FindScript(parentPath, scriptPrefix)
+	if findErr != nil {
+		return fmt.Errorf("error while searching for %s script: %s", scriptPrefix, findErr.Error())
+	}
+	return OutputOfExecuting(parentPath, script)
+}
+
 // OutputOfExecuting runs a script located inside a specified path, and returns the stdout output in a string, or a potential error
 func OutputOfExecuting(parentPath string, script FormicaScript) (string, error) {
 	output := new(bytes.Buffer)
