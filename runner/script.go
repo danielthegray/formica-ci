@@ -116,7 +116,9 @@ func newTooManyScriptsError(scriptFolder string, scriptPrefix Prefix, foundScrip
 
 // FindScript looks for a script with a certain prefix/name in the specified folder
 // since most jobs in Formica CI are done with scripts, the name of the script will
-// define what job it is called for
+// define what job it is called for. The existence of two scripts with the same prefix
+// is considered an error, except when the second option is *.bat, in which case, the
+// *.bat script will be returned only if we are running on Windows.
 func FindScript(scriptFolder string, scriptPrefix Prefix) (FormicaScript, *FindScriptError) {
 	var matchingScripts []string
 	filesInFolder, err := ioutil.ReadDir(scriptFolder)
@@ -135,10 +137,30 @@ func FindScript(scriptFolder string, scriptPrefix Prefix) (FormicaScript, *FindS
 	if len(matchingScripts) == 0 {
 		return "", newScriptNotFoundError(scriptFolder, scriptPrefix)
 	}
-	if len(matchingScripts) > 1 {
-		return "", newTooManyScriptsError(scriptFolder, scriptPrefix, matchingScripts)
+	if len(matchingScripts) == 1 {
+		return matchingScripts[0], nil
 	}
-	return matchingScripts[0], nil
+	if len(matchingScripts) == 2 {
+		batIndex := -1
+		for index, scriptResult := range matchingScripts {
+			if scriptResult == string(scriptPrefix)+".bat" {
+				batIndex = index
+				break
+			}
+		}
+		if batIndex == -1 {
+			// the other script found is not a .bat script
+			return "", newTooManyScriptsError(scriptFolder, scriptPrefix, matchingScripts)
+		}
+		if runtime.GOOS == "windows" {
+			return matchingScripts[batIndex], nil
+		} else {
+			notBatIndex := 1 - batIndex // the index of the script that is not the .bat file
+			return matchingScripts[notBatIndex], nil
+		}
+
+	}
+	return "", newTooManyScriptsError(scriptFolder, scriptPrefix, matchingScripts)
 }
 
 // FileTransferCommand builds a series of shell commands to place a local file on the server, at a specific destination path
