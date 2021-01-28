@@ -163,6 +163,32 @@ func FindScript(scriptFolder string, scriptPrefix Prefix) (FormicaScript, *FindS
 	return "", newTooManyScriptsError(scriptFolder, scriptPrefix, matchingScripts)
 }
 
+// FindScriptInJobOrParents looks for a script not only in a job folder but in the entire hierarchy of jobs/job-groups
+// and returns the folder and script name where the sought for script is, and a potential error. If no script is found,
+// two blank strings and a nil error will be returned.
+func FindScriptInJobOrParents(rootFolder string, leafPath string, scriptPrefix Prefix) (string, FormicaScript, error) {
+	scriptLocation, err := filepath.Abs(filepath.Join(rootFolder, leafPath))
+	if err != nil {
+		return "", "", fmt.Errorf("error while building absolute path to script search leaf folder: %s", err.Error())
+	}
+	absoluteRootFolder, err := filepath.Abs(rootFolder)
+	if err != nil {
+		return "", "", fmt.Errorf("error while building absolute path to search root folder: %s", err.Error())
+	}
+	for scriptLocation != absoluteRootFolder {
+		script, findErr := FindScript(scriptLocation, scriptPrefix)
+		if findErr == nil {
+			return scriptLocation, script, nil
+		}
+		if !findErr.IsNoScriptFoundError() {
+			return "", "", findErr
+		}
+		scriptLocation = filepath.Dir(scriptLocation)
+	}
+	// we did not find the script in the job or any parent, so there is no related script in the job's hierarchy
+	return "", "", nil
+}
+
 // FileTransferCommand builds a series of shell commands to place a local file on the server, at a specific destination path
 // using only a direct terminal connection (it assumes that the client has the "base64" utility installed)
 func FileTransferCommand(localFileToTransfer, pathOnDestination string) (string, error) {
@@ -223,6 +249,15 @@ func TransferAndRunScriptCommand(localFile, remoteExecDir string) (string, error
 		"sh ./" + localFileName + "\n" +
 		"echo STEP_RET_CODE=$?\n"
 	return fileTransferCommands, nil
+}
+
+// PrepareCommandWithoutInput prepares a command to be executed without any input, and returning strings.Builder
+// objects which can be used to read back the stdout/stderr output of the process
+func PrepareCommandWithoutInput(parentFolder string, scriptFile FormicaScript) (*exec.Cmd, *strings.Builder, *strings.Builder) {
+	stdin := strings.NewReader("")
+	stdout := &strings.Builder{}
+	stderr := &strings.Builder{}
+	return PrepareCommand(parentFolder, scriptFile, stdin, stdout, stderr), stdout, stderr
 }
 
 // PrepareCommand sets up a command ready to be executed and wires in stdin/stdout/stderr readers/writers
