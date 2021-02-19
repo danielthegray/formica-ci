@@ -134,7 +134,7 @@ func FindScript(scriptFolder string, scriptPrefix Prefix) (FormicaScript, *FindS
 		if file.IsDir() {
 			continue
 		}
-		if strings.HasPrefix(file.Name(), string(scriptPrefix)) {
+		if file.Name() == string(scriptPrefix) || strings.HasPrefix(file.Name(), string(scriptPrefix)+".") {
 			matchingScripts = append(matchingScripts, file.Name())
 		}
 	}

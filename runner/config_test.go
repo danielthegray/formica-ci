@@ -8,6 +8,7 @@ import (
 )
 
 func TestUpdateInit(t *testing.T) {
+	t.Parallel()
 	updateTestFolder, err := ioutil.TempDir(".", "update_test")
 	defer os.RemoveAll(updateTestFolder)
 	if err != nil {
