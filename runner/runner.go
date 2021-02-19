@@ -3,7 +3,6 @@ package runner
 import (
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"os/exec"
 	"path"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const configFolder string = "formica_conf"
@@ -134,14 +135,15 @@ type branchState struct {
 }
 
 func checkBranchVersions(jobPath string) ([]branchState, error) {
+	log.WithField("job_path", jobPath).Info("Checking job branch versions")
 	branchVersionsOutput, err := FindAndExecute(jobPath, branchedVersionCheck)
 	if err != nil {
 		return nil, fmt.Errorf("error while checking branch versions: %s", err.Error())
 	}
-	return parseBranchVersions(branchVersionsOutput)
+	return parseBranchVersions(branchVersionsOutput), nil
 }
 
-func parseBranchVersions(branchVersionCheckOutput string) ([]branchState, error) {
+func parseBranchVersions(branchVersionCheckOutput string) []branchState {
 	branchLines := strings.Split(branchVersionCheckOutput, "\n")
 	branchStates := make([]branchState, len(branchLines))
 	branchVersionParser := regexp.MustCompile("^([^[[:space:]]]+)[[:space:]]+([[:space:]]+)[[:space:]]*$")
@@ -154,10 +156,10 @@ func parseBranchVersions(branchVersionCheckOutput string) ([]branchState, error)
 			Version: branchVersion,
 		})
 	}
-	return branchStates, nil
+	return branchStates
 }
 
-func branchListOfJob(jobPath string) ([]string, error) {
+func listBranchesOfJob(jobPath string) ([]string, error) {
 	branches, err := checkBranchVersions(jobPath)
 	if err != nil {
 		return nil, err
@@ -176,6 +178,7 @@ func branchListOfJob(jobPath string) ([]string, error) {
 // The first parameter is the path where the job configuration we are checking is located.
 // The second parameters is a map showing the list of branches found at a specific folder in the job definition tree.
 func generateAllJobs(jobDefPath string, branchPoints *map[string][]string) ([]jobDef, error) {
+	log.WithField("job_def_path", jobDefPath).Info("Generating jobs")
 	jobDefHierarchy := strings.Split(jobDefPath, string(os.PathSeparator))
 	if len(jobDefHierarchy) < 1 {
 		return nil, fmt.Errorf("path of job %s could not be split", jobDefPath)
@@ -216,6 +219,7 @@ func generateAllJobs(jobDefPath string, branchPoints *map[string][]string) ([]jo
 	}
 	jobs := make([]jobDef, len(jobList))
 	for _, jobName := range jobList {
+		log.Infof("Found job %s defined at %s", jobName.String(), jobDefPath)
 		jobs = append(jobs, jobDef{
 			jobConfigPath: jobDefPath,
 			jobName:       jobName.String(),
@@ -233,7 +237,8 @@ func validateNoNestedBranches(branchPoints *map[string][]string, newBranchPoint 
 	return nil
 }
 
-func reloadJobConfigs() error {
+func reloadJobDefs() error {
+	log.Info("Reloading all job definitions from config folder")
 	existingJobs.Lock()
 	defer existingJobs.Unlock()
 	versionCheckers.Lock()
@@ -261,11 +266,12 @@ func reloadJobConfigs() error {
 			}
 			jobPath := confRootSplitFromPath[1]
 			if branchScript, findErr := FindScript(folderPath, branchedVersionCheck); findErr == nil {
+				log.WithField("job_def_path", folderPath).Info("Found branched job definition")
 				err := validateNoNestedBranches(&branchesByJob, folderPath)
 				if err != nil {
 					return err
 				}
-				branchList, branchErr := branchListOfJob(folderPath)
+				branchList, branchErr := listBranchesOfJob(folderPath)
 				if branchErr != nil {
 					return fmt.Errorf("error while checking for branches of %s: %s", jobPath, branchErr.Error())
 				}
@@ -276,12 +282,14 @@ func reloadJobConfigs() error {
 				branchesByJob[jobPath] = branchList
 			}
 			if versionScript, findErr := FindScript(folderPath, singleVersionCheck); findErr == nil {
+				log.WithField("job_def_path", folderPath).Info("Found simple job definition")
 				versionCheckers.single = append(versionCheckers.single, versionChecker{
 					jobFolder: folderPath,
 					script:    versionScript,
 				})
 			}
 			if _, findErr := FindScript(folderPath, agentInit); findErr == nil {
+				log.WithField("job_def_path", folderPath).Info("Found job executor")
 				foundJobs, err := generateAllJobs(folderPath, &branchesByJob)
 				if err != nil {
 					return err
@@ -307,7 +315,7 @@ func launchBackgroundUpdater() chan<- struct{} {
 			case <-time.After(jobUpdateDelay):
 				err := updateConfig()
 				if err != nil {
-					log.Printf("Unexpected error while keeping configuration updated: %s", err)
+					log.Errorf("Unexpected error while keeping configuration updated: %s", err)
 				}
 			}
 		}
@@ -316,12 +324,14 @@ func launchBackgroundUpdater() chan<- struct{} {
 }
 
 func jobsToTrigger(jobName string) []jobDef {
+	log.WithField("job_root", jobName).Info("Triggering job tree")
 	existingJobs.Lock()
 	defer existingJobs.Unlock()
 	var jobs []jobDef
 	jobPrefix := jobName + string(os.PathSeparator)
 	for _, validJob := range existingJobs.jobs {
 		if validJob.jobName == jobName || strings.HasPrefix(validJob.jobName, jobPrefix) {
+			log.WithField("job_name", validJob.jobName).Info("Triggering job")
 			jobs = append(jobs, validJob)
 		}
 	}
@@ -352,7 +362,7 @@ func generateJobRunCode(job jobDef) (string, error) {
 	// we combine the locally generated shell code + the job transfer/run commands
 	jobScript = localScriptOutput + jobScript
 
-	log.Printf("The job script is %s", jobScript)
+	log.WithField("job_script", jobScript).Debug("Running job with code")
 
 	return jobScript, nil
 }
@@ -386,7 +396,7 @@ func prepareRunFolder(job jobDef) (string, error) {
 
 		err = os.Mkdir(runFolder, 0750)
 		if err != nil {
-			log.Printf("Error while preparing run folder %s: %s", runFolder, err.Error())
+			log.Errorf("Error while preparing run folder %s: %s", runFolder, err.Error())
 		}
 		attempts++
 	}
@@ -405,10 +415,12 @@ func saveAndExportJobVersion(jobRunFolder string, job jobDef) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("error when executing version check script for job %s: %s", job.jobName, err.Error())
 		}
+		// write out version.tag file
 		err = ioutil.WriteFile(filepath.Join(jobRunFolder, versionTag), []byte(jobVersion), 0644)
 		if err != nil {
 			return "", fmt.Errorf("error when writing version tag for job %s: %s", job.jobName, err.Error())
 		}
+		// return job version for usage in other scripts
 		return fmt.Sprintf("export JOB_VERSION='%s'\n", jobVersion), nil
 	}
 	branchedVersionScriptLocation, branchedVersionScript, err := FindScriptInJobOrParents(configFolder, job.jobConfigPath, branchedVersionCheck)
@@ -420,11 +432,17 @@ func saveAndExportJobVersion(jobRunFolder string, job jobDef) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("error when executing version check script for job %s: %s", job.jobName, err.Error())
 		}
-		versionsAndBranches, err := parseBranchVersions(branchedVersionsOutput)
-		if err != nil {
-			return "", fmt.Errorf("error while parsing branch versions for job %s: %s", job.jobName, err.Error())
+		versionsAndBranches := parseBranchVersions(branchedVersionsOutput)
+		jobVersion := ""
+		for _, branchState := range versionsAndBranches {
+			if branchState.Name == job.branchName {
+				jobVersion = branchState.Version
+				break
+			}
 		}
-
+		if jobVersion == "" {
+			return "", fmt.Errorf("no version found for branch %s", job.branchName)
+		}
 		err = ioutil.WriteFile(filepath.Join(jobRunFolder, versionTag), []byte(jobVersion), 0644)
 		if err != nil {
 			return "", fmt.Errorf("error when writing version tag for job %s: %s", job.jobName, err.Error())
@@ -437,7 +455,7 @@ func saveAndExportJobVersion(jobRunFolder string, job jobDef) (string, error) {
 
 func runJob(job jobDef) (*exec.Cmd, error) {
 	jobFolder := filepath.Join(configFolder, job.jobName)
-	log.Printf("Launching job from %s", jobFolder)
+	log.WithField("job_folder", jobFolder).Info("Launching job")
 	agentInitScript, findErr := FindScript(jobFolder, agentInit)
 	if findErr != nil {
 		return nil, fmt.Errorf("error while searching for %s script: %s", agentInit, findErr.Error())
@@ -474,11 +492,11 @@ func runJob(job jobDef) (*exec.Cmd, error) {
 		newJob.Wait()
 		agentCleanupScript, findErr := FindScript(jobRunFolder, agentCleanup)
 		if findErr != nil {
-			log.Printf("error while looking for cleanup script of job '%s': %s", jobName, err.Error())
+			log.Errorf("error while looking for cleanup script of job '%s': %s", job.jobName, err.Error())
 		}
 		_, err := OutputOfExecuting(jobRunFolder, agentCleanupScript)
 		if err != nil {
-			log.Printf("error while cleaning up agent for job '%s': %s", jobName, err.Error())
+			log.Errorf("error while cleaning up agent for job '%s': %s", job.jobName, err.Error())
 		}
 	}()
 	return newJob, nil
@@ -499,13 +517,13 @@ func launchJobRunner() (receiver chan<- string, stopNotifier chan<- struct{}) {
 			case jobToRun := <-jobReceiver:
 				jobsToTrigger := jobsToTrigger(jobToRun)
 				if len(jobsToTrigger) == 0 {
-					log.Printf("no job matching '%s' was found in the configuration folder!", jobToRun)
+					log.Warnf("no job matching '%s' was found in the configuration folder!", jobToRun)
 					continue
 				}
 				for _, jobToRun := range jobsToTrigger {
 					newJob, err := runJob(jobToRun)
 					if err != nil {
-						log.Printf("error while running job '%s': %s", jobToRun, err.Error())
+						log.WithField("job_name", jobToRun.jobName).Errorf("error while running job: %s", err.Error())
 						continue
 					}
 					runningJobs = append(runningJobs, *newJob)
@@ -526,28 +544,28 @@ func launchJobQueueListener(jobRunner chan<- string) chan<- struct{} {
 			case <-jobQueueStopEvent:
 				err := os.RemoveAll(jobQueue)
 				if err != nil {
-					log.Printf("error when cleaning up job queue folder: %s", err.Error())
+					log.Errorf("error when cleaning up job queue folder: %s", err.Error())
 				}
 				return
 			case <-time.After(queuePollDelay):
 				filesInQueue, err := ioutil.ReadDir(jobQueue)
 				if err != nil {
-					log.Printf("error when listing jobs in queue: %s", err.Error())
+					log.Errorf("error when listing jobs in queue: %s", err.Error())
 					continue
 				}
 				for _, enqueuedJob := range filesInQueue {
 					fullJobFilename := path.Join(jobQueue, enqueuedJob.Name())
 					specifiedJob, err := ioutil.ReadFile(fullJobFilename)
 					if err != nil {
-						log.Printf("error while opening job file %s: %s", fullJobFilename, err.Error())
+						log.Errorf("error while opening job file %s: %s", fullJobFilename, err.Error())
 					} else {
 						jobName := strings.TrimSpace(string(specifiedJob))
 						jobRunner <- jobName
-						log.Printf("Found job %s in %s", jobName, fullJobFilename)
+						log.Infof("Found job %s in %s", jobName, fullJobFilename)
 					}
 					err = os.Remove(fullJobFilename)
 					if err != nil {
-						log.Printf("failed to cleanup job file %s: %s", fullJobFilename, err.Error())
+						log.Errorf("failed to cleanup job file %s: %s", fullJobFilename, err.Error())
 					}
 				}
 			}
@@ -557,6 +575,7 @@ func launchJobQueueListener(jobRunner chan<- string) chan<- struct{} {
 }
 
 func fetchVersionsOfJobs() *map[string]string {
+	log.Info("Checking if versioned jobs have any updates")
 	versionCheckers.Lock()
 	singleVersionCheckers := versionCheckers.single[:]
 	branchedVersionCheckers := versionCheckers.branched[:]
@@ -572,7 +591,7 @@ func fetchVersionsOfJobs() *map[string]string {
 		singleVersionStderrs[jobFolder] = vcStderr
 		err := versionCheckCommand.Start()
 		if err != nil {
-			log.Printf("error while checking version of job %s: %s", jobFolder, err.Error())
+			log.Errorf("error while checking version of job %s: %s", jobFolder, err.Error())
 		}
 	}
 	branchedVersionCmds := make(map[string]*exec.Cmd)
@@ -586,19 +605,19 @@ func fetchVersionsOfJobs() *map[string]string {
 		branchedVersionStderrs[jobFolder] = vcStderr
 		err := versionCheckCommand.Start()
 		if err != nil {
-			log.Printf("error while checking version of job %s: %s", jobFolder, err.Error())
+			log.Errorf("error while checking version of job %s: %s", jobFolder, err.Error())
 		}
 	}
 	for versionedJob, versionCmd := range singleVersionCmds {
 		err := versionCmd.Wait()
 		if err != nil {
-			log.Printf("error while executing version check of %s:\nError message: %s\nstderr output:%s", versionedJob, err.Error())
+			log.Errorf("error while executing version check of %s:\nError message: %s\nstderr output:%s", versionedJob, err.Error(), singleVersionStderrs[versionedJob])
 		}
 	}
 	for versionedJob, versionCmd := range branchedVersionCmds {
 		err := versionCmd.Wait()
 		if err != nil {
-			log.Printf("error while executing branched version check of %s:\nError message: %s\nstderr output:%s", versionedJob, err.Error())
+			log.Errorf("error while executing branched version check of %s:\nError message: %s\nstderr output:%s", versionedJob, err.Error(), branchedVersionStderrs[versionedJob])
 		}
 	}
 	versionsOfJobs := make(map[string]string)
@@ -606,18 +625,18 @@ func fetchVersionsOfJobs() *map[string]string {
 		currentVersion := versionBuffer.String()
 		jobsUnderVersion := jobsToTrigger(versionedJob)
 		for _, jobUnderVersion := range jobsUnderVersion {
-			log.Printf("Job %s is now at version %s", jobUnderVersion, currentVersion)
+			log.Debugf("Job %s is now at version %s", jobUnderVersion, currentVersion)
 			versionsOfJobs[jobUnderVersion.jobName] = currentVersion
 		}
 	}
 	for versionedJob, versionBuffer := range branchedVersionStdouts {
-		versionsAndBranches, err := parseBranchVersions((*versionBuffer).String())
+		versionsAndBranches := parseBranchVersions((*versionBuffer).String())
 		for _, versionAndBranch := range versionsAndBranches {
 			jobWithBranch := versionedJob + versionAndBranch.Name
 			versionOfBranch := versionAndBranch.Version
 			jobsUnderVersion := jobsToTrigger(jobWithBranch)
 			for _, jobUnderVersion := range jobsUnderVersion {
-				log.Printf("Job %s is now at version %s", jobUnderVersion, versionOfBranch)
+				log.Debugf("Job %s is now at version %s", jobUnderVersion, versionOfBranch)
 				versionsOfJobs[jobUnderVersion.jobName] = versionOfBranch
 			}
 		}
@@ -632,7 +651,7 @@ func getVersionsOfLatestRuns() *map[string]string {
 		return &versionsForRun
 	}
 	if err != nil {
-		log.Printf("error while checking %s folder for version tags: %s", formicaRuns, err.Error())
+		log.Errorf("error while checking %s folder for version tags: %s", formicaRuns, err.Error())
 	}
 	existingJobs.Lock()
 	jobs := existingJobs.jobs[:]
@@ -640,11 +659,12 @@ func getVersionsOfLatestRuns() *map[string]string {
 	for _, job := range jobs {
 		jobRuns, err := ioutil.ReadDir(filepath.Join(formicaRuns, job.jobName))
 		if os.IsNotExist(err) {
+			log.Debugf("job %s has never been run", job.jobName)
 			// no run yet, so no version
 			continue
 		}
 		if err != nil {
-			log.Printf("error while checking runs of job %s for version tags: %s", job, err.Error())
+			log.Errorf("error while checking runs of job %s for version tags: %s", job, err.Error())
 			continue
 		}
 		latestJobRun := -1
@@ -669,7 +689,7 @@ func getVersionsOfLatestRuns() *map[string]string {
 			continue
 		}
 		if err != nil {
-			log.Printf("error while reader %s file: %s", versionTagFile, err.Error())
+			log.Errorf("error while reader %s file: %s", versionTagFile, err.Error())
 			continue
 		}
 		versionsForRun[job.jobName] = string(versionTagOfRun)
@@ -691,9 +711,9 @@ func setupVersionedJobs(jobRunner chan<- string) chan<- struct{} {
 				lastSeenVersions := *getVersionsOfLatestRuns()
 				for jobName, newVersion := range versionsOfJobs {
 					if newVersion == "" {
-						log.Printf("Job %s has a blank version!", jobName)
+						log.Warnf("Job %s has a blank version!", jobName)
 					}
-					log.Printf("Versioned job %s was last run with version %s and version %s is available", jobName, lastSeenVersions[jobName], newVersion)
+					log.Debugf("Versioned job %s was last run with version %s and version %s is available", jobName, lastSeenVersions[jobName], newVersion)
 					if newVersion != lastSeenVersions[jobName] {
 						jobRunner <- jobName
 					}
@@ -720,7 +740,7 @@ func Start(shutdownNotifiers *ShutdownNotifiers) {
 	jobQueueListenerStop := launchJobQueueListener(jobRunner)
 	versionedJobListenerStop := setupVersionedJobs(jobRunner)
 
-	log.Println("Formica CI is now running")
+	log.Info("Formica CI is now running")
 
 	for {
 		select {

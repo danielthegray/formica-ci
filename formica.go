@@ -1,10 +1,11 @@
 package main
 
 import (
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
+
+	log "github.com/sirupsen/logrus"
 
 	"danielgray.xyz/formica/runner"
 )
@@ -58,6 +59,7 @@ func main() {
 	//stdout := strings.Builder{}
 	//stderr := strings.Builder{}
 	//runner.PrepareCommand(".", "test", stdin, stdout, stderr)
+	log.SetLevel(log.DebugLevel)
 	explainExitLogic()
 	go runner.Start(shutdownNotifiers)
 	<-shutdownNotifiers.ForceTermination

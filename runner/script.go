@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // Prefix is a type specific for script prefixes
@@ -64,7 +65,10 @@ func (tl *TimestampedLogger) Close() error {
 // BuildTimestampedLogger returns a writer that writes a ".log" file with the normal output
 // as well as a ".timestamp" file with the timestamps for each line
 func BuildTimestampedLogger(logFolder, baseName string) (*TimestampedLogger, error) {
-	log.Printf("Building timestamped logger at folder '%s' with base name '%s'", logFolder, baseName)
+	log.WithFields(log.Fields{
+		"log_folder": logFolder,
+		"basename":   baseName,
+	}).Debug("Building timestamped logger")
 	logFilePath := filepath.Join(logFolder, baseName+".log")
 	timestampFilePath := filepath.Join(logFolder, baseName+".timestamp")
 	logFile, err := os.Create(logFilePath)
@@ -138,7 +142,7 @@ func FindScript(scriptFolder string, scriptPrefix Prefix) (FormicaScript, *FindS
 		return "", newScriptNotFoundError(scriptFolder, scriptPrefix)
 	}
 	if len(matchingScripts) == 1 {
-		return matchingScripts[0], nil
+		return FormicaScript(matchingScripts[0]), nil
 	}
 	if len(matchingScripts) == 2 {
 		batIndex := -1
@@ -153,11 +157,10 @@ func FindScript(scriptFolder string, scriptPrefix Prefix) (FormicaScript, *FindS
 			return "", newTooManyScriptsError(scriptFolder, scriptPrefix, matchingScripts)
 		}
 		if runtime.GOOS == "windows" {
-			return matchingScripts[batIndex], nil
-		} else {
-			notBatIndex := 1 - batIndex // the index of the script that is not the .bat file
-			return matchingScripts[notBatIndex], nil
+			return FormicaScript(matchingScripts[batIndex]), nil
 		}
+		notBatIndex := 1 - batIndex // the index of the script that is not the .bat file
+		return FormicaScript(matchingScripts[notBatIndex]), nil
 
 	}
 	return "", newTooManyScriptsError(scriptFolder, scriptPrefix, matchingScripts)
@@ -262,7 +265,10 @@ func PrepareCommandWithoutInput(parentFolder string, scriptFile FormicaScript) (
 
 // PrepareCommand sets up a command ready to be executed and wires in stdin/stdout/stderr readers/writers
 func PrepareCommand(parentFolder string, scriptFile FormicaScript, stdin io.Reader, stdout io.Writer, stderr io.Writer) *exec.Cmd {
-	log.Printf("Running script %s in folder %s", scriptFile, parentFolder)
+	log.WithFields(log.Fields{
+		"script_file":   scriptFile,
+		"parent_folder": parentFolder,
+	}).Debug("Preparing script execution")
 	if !strings.HasPrefix(parentFolder, "/") {
 		currentDir, err := os.Getwd()
 		if err != nil {
@@ -270,7 +276,7 @@ func PrepareCommand(parentFolder string, scriptFile FormicaScript, stdin io.Read
 		}
 		parentFolder = filepath.Join(currentDir, parentFolder)
 	}
-	scriptAbsolutePath := filepath.Join(parentFolder, scriptFile)
+	scriptAbsolutePath := filepath.Join(parentFolder, string(scriptFile))
 	var shellPath string
 	var err error
 	var firstArg string
@@ -301,7 +307,7 @@ func PrepareCommand(parentFolder string, scriptFile FormicaScript, stdin io.Read
 func FindAndExecute(parentPath string, scriptPrefix Prefix) (string, error) {
 	script, findErr := FindScript(parentPath, scriptPrefix)
 	if findErr != nil {
-		return fmt.Errorf("error while searching for %s script: %s", scriptPrefix, findErr.Error())
+		return "", fmt.Errorf("error while searching for %s script: %s", scriptPrefix, findErr.Error())
 	}
 	return OutputOfExecuting(parentPath, script)
 }
