@@ -16,15 +16,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const configFolder string = "formica_conf"
 const jobQueue = "job_queue"
 const formicaRuns = "formica_runs"
 const versionTag = "version.tag"
 
-const configInit Prefix = "config_init"
-const configRemoteVersion Prefix = "config_version_remote"
-const configLocalVersion Prefix = "config_version_local"
-const configUpdate Prefix = "config_update"
 const agentInit Prefix = "agent_init"
 const agentCleanup Prefix = "agent_cleanup"
 const singleVersionCheck Prefix = "single_version_check"
@@ -66,62 +61,6 @@ type versionCheckersList struct {
 
 var existingJobs jobList
 var versionCheckers versionCheckersList
-
-func fetchConfigFolder() error {
-	currentDir, err := os.Getwd()
-	if err != nil {
-		log.Println("Error when getting the current dir")
-		return err
-	}
-	_, err = FindAndExecute(currentDir, configInit)
-	if err != nil {
-		log.Println("Error when fetching the configuration folder! %s", err.Error())
-		return err
-	}
-	return nil
-}
-
-func ensureConfigFolderPresent() error {
-	confStat, err := os.Stat(configFolder)
-	if err != nil {
-		if os.IsNotExist(err) {
-			configErr := fetchConfigFolder()
-			if configErr != nil {
-				return fmt.Errorf("error when fetching configuration folder: %s", configErr.Error())
-			}
-		} else {
-			return fmt.Errorf("unexpected error when checking for permissions of configuration folder '%s': %s", configFolder, err.Error())
-		}
-	}
-	if confStat != nil && !confStat.IsDir() {
-		return fmt.Errorf("configuration folder path '%s' was already occupied, and was not a folder", configFolder)
-	}
-
-	return nil
-}
-
-func updateConfig() error {
-	updateScriptFile, findErr := FindScript(configFolder, configUpdate)
-	if findErr != nil {
-		return fmt.Errorf("error while finding update script in configuration: %s", findErr.Error())
-	}
-	localVersion, err := FindAndExecute(configFolder, configLocalVersion)
-	if err != nil {
-		return fmt.Errorf("error while checking local version of configuration: %s", err.Error())
-	}
-	remoteVersion, err := FindAndExecute(configFolder, configRemoteVersion)
-	if err != nil {
-		return fmt.Errorf("error while checking remote version of configuration: %s", err.Error())
-	}
-	if localVersion != remoteVersion {
-		_, updateErr := OutputOfExecuting(configFolder, updateScriptFile)
-		if updateErr != nil {
-			return fmt.Errorf("error while updating configuration: %s", err.Error())
-		}
-	}
-	// after updating the configuration, we reload the jobs that exist
-	return reloadJobConfigs()
-}
 
 func cloneStringBuilder(buf strings.Builder) strings.Builder {
 	clonedBuf := strings.Builder{}
@@ -727,7 +666,8 @@ func setupVersionedJobs(jobRunner chan<- string) chan<- struct{} {
 
 // Start initializes the job runner
 func Start(shutdownNotifiers *ShutdownNotifiers) {
-	err := ensureConfigFolderPresent()
+	currentDir := currentDir()
+	err := fetchConfigIfNotPresent(currentDir)
 	if err != nil {
 		log.Fatalf("%s", err)
 	}
