@@ -161,7 +161,6 @@ func FindScript(scriptFolder string, scriptPrefix Prefix) (FormicaScript, *FindS
 		}
 		notBatIndex := 1 - batIndex // the index of the script that is not the .bat file
 		return FormicaScript(matchingScripts[notBatIndex]), nil
-
 	}
 	return "", newTooManyScriptsError(scriptFolder, scriptPrefix, matchingScripts)
 }
